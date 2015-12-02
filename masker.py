@@ -1,6 +1,5 @@
 from nilearn.input_data.base_masker import BaseMasker
 from nilearn.input_data import NiftiMasker
-from mgmvpa.masker import SearchlightMasker
 from nilearn import _utils
 from nilearn.image import smooth_img
 import numpy as np

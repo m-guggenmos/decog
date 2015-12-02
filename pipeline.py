@@ -11,10 +11,12 @@ from sklearn.cross_validation import StratifiedKFold, KFold
 from sklearn.feature_selection import SelectPercentile, f_classif, f_regression, VarianceThreshold, SelectFromModel
 from sklearn.grid_search import GridSearchCV
 from sklearn.pipeline import Pipeline
+from sklearn.metrics import accuracy_score, r2_score, explained_variance_score, confusion_matrix, classification_report
 from nilearn.input_data import NiftiMasker
-from mgmvpa.estimator.scikitlearn.multiroi_helper import \
-    MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel, RoiEnsemble
-from mgmvpa.masker import DummyMasker, MultiRoiMasker
+from decereb.feature_selection import \
+    MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel
+from decereb.estimators import RoiEnsemble
+from decereb.masker import DummyMasker, MultiRoiMasker
 from mgutils.archiving import zip_directory_structure
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from treeinterpreter import treeinterpreter as ti
@@ -39,7 +41,7 @@ class LinkDef:
 class AnalysisDef:
 
     def __init__(self, X=None, y=None, clf=None, clf_args=None, regression=False, fs=None, masker=None,
-                 masker_args=None, seed_list=None):
+                 masker_args=None, seed_list=None, label_names=None):
 
         if X is None:
             raise TypeError("keyword argument X is obligatory")
@@ -57,6 +59,11 @@ class AnalysisDef:
         self.masker = masker
         self.masker_args = masker_args
         self.seed_list = seed_list
+        if label_names is None:
+            if not self.regression:
+                self.label_names = ['class_%g' % cls for cls in np.unique(y)]
+        else:
+            self.label_names = label_names
 
     def set_fs(self, **params):
         self.fs = OrderedDict(params)
@@ -326,7 +333,8 @@ class Analysis:
                     features = np.ones(n_features, dtype=bool)
                     for sel in self.selection:
                         features[features] = sel.get_support()
-                    forest_contrib[f, j, features] = np.mean(ti.predict(self.clf, np.array(preproc_test))[2], axis=0)
+                    contrib = ti.predict(self.clf, np.array(preproc_test))[2]
+                    forest_contrib[f, j, features] = np.mean(contrib if self.cfg.regression else contrib[:, :, 0], axis=0)
                 elif isinstance(self.clf, RoiEnsemble) and isinstance(self.clf.base_estimator, (RandomForestRegressor, RandomForestClassifier)):
                     features = dict()
                     if self.selection:
@@ -341,7 +349,8 @@ class Analysis:
                     for k in features.keys():
                         if k not in forest_contrib:
                             forest_contrib[k] = np.full((n_folds, n_seeds, len(features[k])), np.nan)
-                        forest_contrib[k][f, j, features[k]] = np.mean(ti.predict(self.clf.estimators_[k], preproc_test[k])[2], axis=0)
+                        contrib = ti.predict(self.clf.estimators_[k], preproc_test[k])[2]
+                        forest_contrib[k][f, j, features[k]] = np.mean(contrib if self.cfg.regression else contrib[:, :, 0], axis=0)
                 y_pred = np.append(y_pred, predictions)
                 y_true = np.append(y_true, labels_test)
 
@@ -355,7 +364,7 @@ class Analysis:
                         result['votes_seed'][k][j] = [v[i].tolist() for v in self.clf.votes]
 
                 if self.param_grid is not None:
-                    grid_scores_fold_seed[f][j] = [100 * score.mean_validation_score for score in self.pipeline.grid_scores_]
+                    grid_scores_fold_seed[f][j] = [score.mean_validation_score for score in self.pipeline.grid_scores_]
 
             for k in test_index:
                 result['predictions'][k] = np.mean(result['predictions_seed'][k], axis=0)
@@ -372,10 +381,11 @@ class Analysis:
             if (verbose > 2) and hasattr(self.clf, 'votes_pooled'):
                 print('pooled votes: ', [result['votes_pooled'][i] for i in test_index])
 
-        result['accuracy'] = np.corrcoef(y_true, y_pred)[0, 1] if self.cfg.regression else 100 * np.mean(y_pred == y_true)
-        result['accuracy_seed'] = \
-            np.corrcoef(result['predictions_seed'], result['labels_seed'], rowvar=0)[0, n_seeds:].tolist() \
-                if self.cfg.regression else (100 * np.mean(result['correct_seed'], axis=0)).tolist()
+        scorer = r2_score if self.cfg.regression else accuracy_score
+        result['accuracy'] = scorer(y_true, y_pred)
+        label_swap = np.swapaxes(result['labels_seed'], 0, 1)
+        pred_swap = np.swapaxes(result['predictions_seed'], 0, 1)
+        result['accuracy_seed'] = [scorer(l, p) for l, p in zip(label_swap, pred_swap)]
         result['accuracy_ste'] = np.std(result['accuracy_seed'] / np.sqrt(n_seeds))
         if isinstance(self.clf, (RandomForestRegressor, RandomForestClassifier)):
             with warnings.catch_warnings():  # catch stupid behavior of nanmean
@@ -394,6 +404,8 @@ class Analysis:
             print('***************************************************')
             print("Accuracy: %.5f +- %.5f %s" % (result['accuracy'], result['accuracy_ste'],
                   ['%.5f' % acc for acc in result['accuracy_seed']]))
+            if not self.cfg.regression:
+                print(classification_report(y_true, y_pred, target_names=self.cfg.label_names))
             if self.name:
                 print('\tof << %s >>' % self.name)
             print('***************************************************')

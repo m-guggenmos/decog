@@ -4,7 +4,7 @@ from sklearn.utils import safe_mask
 from sklearn.utils.validation import check_is_fitted
 from warnings import warn
 import numpy as np
-from mgmvpa.estimator.scikitlearn import RoiEnsemble
+from decereb.estimators import RoiEnsemble
 
 class MultiRoiVarianceThreshold(BaseEstimator, SelectorMixin):
     """Feature selector that removes all low-variance features.
