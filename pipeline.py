@@ -336,8 +336,8 @@ class Analysis:
                     contrib = ti.predict(self.clf, np.array(preproc_test))[2]
                     forest_contrib[f, j, features] = np.mean(contrib if self.cfg.regression else contrib[:, :, 0], axis=0)
                 elif isinstance(self.clf, RoiEnsemble) and isinstance(self.clf.base_estimator, (RandomForestRegressor, RandomForestClassifier)):
-                    features = dict()
                     if self.selection:
+                        features = dict()
                         for sel in self.selection:
                             for k, v in sel.get_support().items():
                                 if k not in features:
@@ -400,12 +400,20 @@ class Analysis:
                     result['forest_contrib_seed'][k] = np.nanmean(forest_contrib[k], axis=0).tolist()
                     result['forest_contrib'][k] = np.nanmean(result['forest_contrib_seed'][k], axis=0).tolist()
 
+        if self.cfg.regression:
+            result['explained_variance'] = explained_variance_score(y_true, y_pred).tolist()
+        else:
+            result['confusion_matrix'] = confusion_matrix(y_true, y_pred).tolist()
+            result['classification_report'] = classification_report(y_true, y_pred, target_names=self.cfg.label_names)
+
         if verbose:
             print('***************************************************')
             print("Accuracy: %.5f +- %.5f %s" % (result['accuracy'], result['accuracy_ste'],
                   ['%.5f' % acc for acc in result['accuracy_seed']]))
-            if not self.cfg.regression:
-                print(classification_report(y_true, y_pred, target_names=self.cfg.label_names))
+            if self.cfg.regression:
+                print('Explained variance: %.4f%%' % 100 * result['explained_variance'])
+            else:
+                print(result['classification_report'])
             if self.name:
                 print('\tof << %s >>' % self.name)
             print('***************************************************')
