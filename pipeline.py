@@ -2,7 +2,7 @@ import os
 import time
 from warnings import warn
 from inspect import signature
-from collections import OrderedDict, Sequence
+from collections import OrderedDict
 from dataset import connect
 import json
 import multiprocessing_on_dill as multiprocessing
@@ -15,66 +15,43 @@ from sklearn.metrics import accuracy_score, r2_score, explained_variance_score, 
 from nilearn.input_data import NiftiMasker
 from decereb.feature_selection import \
     MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel
-from decereb.estimators import RoiEnsemble
-from decereb.masker import DummyMasker, MultiRoiMasker
 from mgutils.archiving import zip_directory_structure
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from treeinterpreter import treeinterpreter as ti
 import warnings
 
 
-class LinkDef:
-
-    def __init__(self, analysis_def=None, info=None, db_key=None, detailed_save=False):
-
-        if analysis_def is None:
-            raise TypeError("keyword argument analysis_def is obligatory")
-        self.analysis_def = analysis_def
-        self.info = info
-        if db_key is None:
-            self.db_key = OrderedDict(type='unknown')
-        else:
-            self.db_key = db_key
-        self.detailed_save = detailed_save
-
-
-class AnalysisDef:
-
-    def __init__(self, X=None, y=None, clf=None, clf_args=None, regression=False, fs=None, masker=None,
-                 masker_args=None, seed_list=None, label_names=None):
-
-        if X is None:
-            raise TypeError("keyword argument X is obligatory")
-        if y is None:
-            raise TypeError("keyword argument y is obligatory")
-        if clf is None:
-            raise TypeError("keyword argument clf is obligatory")
-
-        self.X = X
-        self.y = y
-        self.clf = clf
-        self.clf_args = clf_args
-        self.regression = regression
-        self.fs = fs
-        self.masker = masker
-        self.masker_args = masker_args
-        self.seed_list = seed_list
-        if label_names is None:
-            if not self.regression:
-                self.label_names = ['class_%g' % cls for cls in np.unique(y)]
-        else:
-            self.label_names = label_names
-
-    def set_fs(self, **params):
-        self.fs = OrderedDict(params)
-
-
 class Link:
 
-    def __init__(self, linkdef=None, analysis=None, result=None):
-        self.linkdef = linkdef
-        self.analysis = analysis
-        self.result = result
+    def __init__(self, scheme=None):
+
+        self.scheme = scheme
+
+        self.info = dict()
+        self.result = None
+        self.analysis = None
+
+        self.n_channels = len(self.scheme.pipeline)
+
+        self.build_db_data()
+
+    def build_db_data(self):
+
+        self.db_key = OrderedDict(
+            list(self.scheme.identifier.items()) +
+            sum([[('%s%s' % (('', '%g_' % c)[self.n_channels > 1], k), v) for k, v in channel.clf.identifier.items()]
+                 for c, channel in enumerate(self.scheme.pipeline)], []) +
+            sum(sum([[[('%s%s' % (('', '%g_' % c)[self.n_channels > 1], k), v) for k, v in fs.identifier.items()] for fs in channel.fs] if channel.fs is not None else [[('%s%s' % (('', '%g_' % c)[self.n_channels > 1], 'fs_name'), None)]]
+                     for c, channel in enumerate(self.scheme.pipeline)], []), [])
+        )
+
+        self.db_key_str = str(self.db_key)[12:-1]
+
+        self.db_info = OrderedDict(
+            sum([[('%s%s' % (('', '%g_' % c)[self.n_channels > 1], info), channel[info]) for c, channel in enumerate(self.scheme.data)] for info in ['labels', 'subjects']], [])
+            # sum([[('%g_%s' % (c, k), v) for k, v in channel.clf.opt_args.items()] for c, channel in enumerate(self.scheme.pipeline)], [])
+        )
+
 
 class Chain:
 
@@ -82,10 +59,12 @@ class Chain:
         self.linkdef_list = linkdef_list
 
     def run(self, test_mode=False, n_jobs=1, verbose=2, seed=None, output_path=None, recompute=False,
-            skip_runerror=True, skip_ioerror=False, zip_code_dirs=None):
+            skip_runerror=True, skip_ioerror=False, zip_code_dirs=None, detailed_save=False):
         """
 
         Args:
+            zip_code_dirs:
+            detailed_save:
             test_mode (bool): run in test-mode (enhanced debugging)
             n_jobs (int): number of jobs for multiprocessing
             verbose (int): verbosity level
@@ -134,21 +113,21 @@ class Chain:
             chain = []
             for link_id, linkdef in enumerate(self.linkdef_list):
                 link = _link((n_jobs, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
-                              skip_ioerror, db_string, lockfile))
+                              skip_ioerror, db_string, lockfile, detailed_save))
                 chain.append(link)
 
         else:
             pool = multiprocessing.Pool(None if n_jobs == -1 else n_jobs)
             chain = pool.map(_link, [(n_jobs, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
-                                      skip_ioerror, db_string, lockfile)
+                                      skip_ioerror, db_string, lockfile, detailed_save)
                                      for link_id, linkdef in enumerate(self.linkdef_list)])
             pool.close()
 
         print('Failed links:')
         for i, link in enumerate(chain):
-            if not link.analysis.success:
+            if not link.info['success']:
                 print('%s' % self.linkdef_list[i].db_key)
-                for message in link.analysis.messages:
+                for message in link.info['messages']:
                     print(message)
 
         return chain
@@ -170,52 +149,50 @@ def _link(params):
         lockfile (str): path of lock file
     """
 
-    n_jobs, verbose, seed, link_id, chain_len, linkdef, skip_runerror, skip_ioerror, db_string, lockfile = params
+    n_jobs, verbose, seed, link_id, chain_len, link, skip_runerror, skip_ioerror, db_string, lockfile, detailed_save = params
 
-    link_string = "Running chain link %g / %g %s\n%s" % (link_id + 1, chain_len, db_string, str(linkdef.db_key)[12:-1])
-    link_string_short = "[%g/%g] %s" % (link_id + 1, chain_len, str(linkdef.db_key)[12:-1])
+    link_string = "Running chain link %g / %g %s\n%s" % (link_id + 1, chain_len, db_string, link.db_key_str)
+    link_string_short = "[%g/%g] %s" % (link_id + 1, chain_len, link.db_key_str)
 
-    an = Analysis(linkdef.analysis_def, name=link_string_short)
+    link.analysis = Analysis(link.scheme, name=link_string_short)
 
-    an.t_start, an.t_stamp_start = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
+    link.info['t_start'], link.info['t_stamp_start'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
 
-    print("\n-------  %s  -------" % an.t_start)
+    print("\n-------  %s  -------" % link.info['t_start'])
     print(link_string)
     print("-------------------------------------\n")
 
-    an.messages = []
+    link.info['messages'] = []
     try:
-        an.result = an.run(n_jobs=n_jobs, verbose=verbose, seed=seed)
+        link.result = link.analysis.run(n_jobs=n_jobs, verbose=verbose, seed=seed)
     except Exception as ex:
-        an.success = False
-        an.result = False
-        an.messages.append("An exception of type {0} occured. Arguments:\n{1!r}".format(type(ex).__name__, ex.args))
+        link.info['success'] = False
+        link.result = False
+        link.info['messages'].append("An exception of type {0} occured. Arguments:\n{1!r}".format(type(ex).__name__, ex.args))
         if skip_runerror:
-            warn(an.messages[-1] + '\n' + link_string_short)
+            warn(link.info['messages'][-1] + '\n' + link_string_short)
         else:
             print('[RunErr] ' + link_string_short)
             raise  # re-raise
     finally:
-        an.success = True
-        an.messages.append("Link ran successfully")
-        an.t_end, an.t_stamp_end = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
-        an.t_dur = an.t_stamp_end - an.t_stamp_start
-        result = {k: v for k, v in an.result.items() if linkdef.detailed_save or
-                  (not k.endswith('_seed') and not k.startswith('forest_contrib'))}
-        db_dict = OrderedDict([('identifier', str(linkdef.db_key)[12:-1]),
-                               ('accuracy', result['accuracy']),
+        link.info['success'] = True
+        link.info['messages'].append("Link ran successfully")
+        link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
+        link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
+        result = {k: v for k, v in link.result.items() if detailed_save or not k.startswith('forest_contrib')}
+        db_dict = OrderedDict([('accuracy', result['accuracy']),
                                ('accuracy_ste', result['accuracy_ste']),
-                               ('proc_time', an.t_dur),
+                               ('proc_time', link.info['t_dur']),
                                ('result', json.dumps(result)),
-                               ('info', json.dumps(linkdef.info) if linkdef.detailed_save else None),
-                               ('t_start', an.t_start),
-                               ('t_end', an.t_end),
-                               ('timestamp_start', an.t_stamp_start),
-                               ('timestamp_end', an.t_stamp_end),
-                               ('success', an.success),
-                               ('messages', ", ".join(["[" + m + "]" for m in an.messages]) if linkdef.detailed_save else None)
+                               ('info', json.dumps(link.db_info) if detailed_save else None),
+                               ('t_start', link.info['t_start']),
+                               ('t_end', link.info['t_end']),
+                               ('timestamp_start', link.info['t_stamp_start']),
+                               ('timestamp_end', link.info['t_stamp_end']),
+                               ('success', link.info['success']),
+                               ('messages', ", ".join(["[" + m + "]" for m in link.info['messages']]) if detailed_save else None)
                                ] +
-                              list(linkdef.db_key.items()))
+                              list(link.db_key.items()))
     try:
         total_time = 0
         while os.path.exists(lockfile):
@@ -241,20 +218,27 @@ def _link(params):
         if os.path.exists(lockfile):
             os.remove(lockfile)
 
-    return Link(linkdef=linkdef, analysis=an, result=result)
+    return link
 
 
 class Analysis:
 
-    def __init__(self, cfg, name=''):
-        self.cfg = cfg
+    def __init__(self, scheme, name=''):
+        self.scheme = scheme
         self.name = name
-        self.X = cfg.X
-        self.y = cfg.y
-        self.n_samples = len(cfg.X)
+
+        self.n_channels = len(self.scheme.data)
+        self.multi_channel = self.n_channels > 1
+
+        self.n_seeds = None
+        self.n_samples = None
+        self.is_regression = None
+        self.y_true = None
+        self.label_names = None
+        self.scorer = None
 
         self.masker = None
-        self.selection = []
+        self.selection = None
         self.clf = None
         self.pipeline = None
         self.steps = None
@@ -264,296 +248,384 @@ class Analysis:
 
         self.construct_pipe(n_jobs=n_jobs, seed=seed, verbose=verbose)
 
-        if self.cfg.regression:
-            cv_outer = KFold(len(self.y), n_folds=min(int(len(self.y)/4.), 10), random_state=seed)
-        else:
-            cv_outer = StratifiedKFold(self.y, n_folds=min(int(len(self.y)/4.), 10), random_state=seed)
-        # cv_outer = LeaveOneOut(len(self.y))
+        for i, data in enumerate(self.scheme.data):
+            assert np.array_equal(data.labels, self.scheme.data[0].labels), "Labels of all channels must be identical"
+        for i, pipeline in enumerate(self.scheme.pipeline):
+            assert pipeline.clf.regression == self.scheme.pipeline[0].clf.regression, \
+                "All Channels must be either regressions or classifications"
 
-        seed_list = self.cfg.seed_list if self.cfg.seed_list is not None else [seed]
-        n_seeds = len(seed_list)
-        n_folds = len(cv_outer)
+        self.is_regression = self.scheme.pipeline[0].clf.regression
+        self.y_true = np.array(self.scheme.data[0].labels)
+        self.label_names = self.scheme.data[0].label_names
+        self.scorer = r2_score if self.is_regression else accuracy_score
 
-        y_pred = []
-        y_true = []
-        grid_scores_fold_seed=[[None] * n_seeds for _ in range(n_folds)]
-        if isinstance(self.clf, (RandomForestRegressor, RandomForestClassifier)):
-            n_features = self.X[0].shape[0]
-            forest_contrib = np.full((n_folds, n_seeds, n_features), np.nan)
-        elif isinstance(self.clf, RoiEnsemble) and isinstance(self.clf.base_estimator, (RandomForestRegressor, RandomForestClassifier)):
-            forest_contrib = dict()
-        result = dict(
-            correct_seed=[[None] * n_seeds for _ in range(self.n_samples)],
-            predictions_seed=[[None] * n_seeds for _ in range(self.n_samples)],
-            labels_seed=[[None] * n_seeds for _ in range(self.n_samples)],
-            votes_seed=[[None] * n_seeds for _ in range(self.n_samples)],
-            votes_pooled_seed=[[None] * n_seeds for _ in range(self.n_samples)],
-            grid_scores_seed=[None] * n_seeds,
-            correct=[None] * self.n_samples,
-            predictions=[None] * self.n_samples,
-            labels=self.y,
-            votes=[None] * self.n_samples,
-            votes_pooled=[None] * self.n_samples,
-            n_seeds=n_seeds
-        )
+        self.n_seeds = len(self.scheme.seed_list)
+        self.n_samples = len(self.scheme.data[0].labels)
 
-        for f, (train_index, test_index) in enumerate(cv_outer):
-            if verbose > 1:
-                print('[%s] Fold %g / %g [%g seed iteration(s)]' % (time.strftime("%d.%m %H:%M:%S"), f + 1,
-                                                                    len(cv_outer), n_seeds))
-                if self.name:
-                    print('\tof << %s >>' % self.name)
-            images_train = [self.X[i] for i in train_index]
-            labels_train = [self.y[i] for i in train_index]
-            images_test = [self.X[i] for i in test_index]
-            labels_test = [self.y[i] for i in test_index]
+        result_channels = [[None] * self.n_seeds for _ in range(self.n_channels)]
+        if self.n_channels > 1:
+            result_meta = [None] * self.n_seeds
+        train_cache = None
+        test_cache = None
 
-            # (1 / 2) If no GridSearchCV is used, we can prefit the preprocessing steps
-            if self.param_grid is None:
-                preproc_train = Pipeline(self.pipeline.steps[:-1]).fit_transform(images_train, labels_train)
+        for s, seed_ in enumerate(self.scheme.seed_list):
 
-            for j, seed_ in enumerate(seed_list):
-                if verbose > 3:
-                    print('seed %g / %g: %s' % (j + 1, n_seeds, seed_))
-                if hasattr(self.clf, 'random_state'):
-                    self.clf.random_state = seed_
-                if 'fs_nested' in self.steps and hasattr(self.steps['fs_nested'].estimator, 'random_state'):
-                    self.steps['fs_nested'].estimator.random_state = seed_
-                if self.param_grid is None:
-                    self.clf.fit(preproc_train, labels_train)
-                else:  # (2 /2) else we have to fit the entire pipeline for each seed
-                    self.pipeline.fit(images_train, labels_train)
-                    # preproc_train = Pipeline(self.pipeline.steps[:-1]).fit_transform(images_train, labels_train)
-                    # self.clf.fit(preproc_train, labels_train)
-                # self.pipeline.fit(images_train, labels_train)
-                preproc_test = Pipeline(self.pipeline.steps[:-1]).transform(images_test)
-                predictions = self.clf.predict(preproc_test)
-                # predictions = self.pipeline.predict(images_test)
-                if isinstance(self.clf, (RandomForestRegressor, RandomForestClassifier)):
-                    features = np.ones(n_features, dtype=bool)
-                    for sel in self.selection:
-                        features[features] = sel.get_support()
-                    contrib = ti.predict(self.clf, np.array(preproc_test))[2]
-                    forest_contrib[f, j, features] = np.mean(contrib if self.cfg.regression else contrib[:, :, 0], axis=0)
-                elif isinstance(self.clf, RoiEnsemble) and isinstance(self.clf.base_estimator, (RandomForestRegressor, RandomForestClassifier)):
-                    if self.selection:
-                        features = dict()
-                        for sel in self.selection:
-                            for k, v in sel.get_support().items():
-                                if k not in features:
-                                    features[k] = v
-                                else:
-                                    features[k][features[k]] = v
+            if self.is_regression:
+                cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+            else:
+                cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+            # cv_outer = LeaveOneOut(len(self.y))
+
+            n_folds = len(cv_outer)
+            
+            if train_cache is None:
+                train_cache = [None] * n_folds
+            if test_cache is None:
+                test_cache = [None] * n_folds
+
+            for ch in range(self.n_channels):
+                result_channels[ch][s] = dict(
+                    y_pred=np.full(self.n_samples, np.nan),
+                    grid_scores=[None] * n_folds
+                )
+                if self.scheme.is_multiroi[ch]:
+                    result_channels[ch][s].update(
+                        votes=np.full((len(self.scheme.masker_args[0]['rois']), self.n_samples), np.nan),
+                        votes_pooled=np.full(self.n_samples, np.nan),
+                    )
+
+            if self.n_channels > 1:
+                result_meta[s] = dict(
+                    y_pred=np.full(self.n_samples, np.nan)
+                )
+
+            for f, (train_index, test_index) in enumerate(cv_outer):
+                
+                if train_cache[f] is None:
+                    train_cache[f] = [None] * self.n_channels
+                if test_cache[f] is None:
+                    test_cache[f] = [None] * self.n_channels                
+
+                for c in range(self.n_channels):
+
+                    X = self.scheme.data[c].data
+
+                    if verbose > 1:
+                        print('[%s] Seed %g / %g Fold %g / %g Channel %g / %g' %
+                              (time.strftime("%d.%m %H:%M:%S"), s + 1, self.n_seeds, f + 1, n_folds, c + 1, self.n_channels))
+                        if self.name:
+                            print('\tof << %s >>' % self.name)
+                    images_train = [X[i] for i in train_index]
+                    labels_train = [self.y_true[i] for i in train_index]
+                    images_test = [X[i] for i in test_index]
+
+                    # (1 / 2) If no GridSearchCV is used, we can prefit the preprocessing steps
+                    if self.param_grid[c] is None and train_cache[f][c] is None:
+                        train_cache[f][c] = Pipeline(self.steps[c][:-1]).fit_transform(images_train, labels_train)
+
+                    if hasattr(self.clf[c], 'random_state'):
+                        self.clf[c].random_state = seed_
+                    if 'fs_nested' in self.steps and hasattr(self.steps[c]['fs_nested'].estimator, 'random_state'):
+                        self.steps['fs_nested'].estimator.random_state = seed_
+                    if self.param_grid[c] is None:
+                        self.clf[c].fit(train_cache[f][c], labels_train)
+                    else:  # (2 /2) else we have to fit the entire pipeline for each seed
+                        self.pipeline[c].fit(images_train, labels_train)
+                        # train_cache = Pipeline(self.pipeline.steps[:-1]).fit_transform(images_train, labels_train)
+                        # self.clf.fit(train_cache, labels_train)
+
+
+
+                        for step in range(len(self.steps[c])):
+                            self.steps[c][step] = self.pipeline[c].best_estimator_.steps[step]
+                        if len(self.selection[c]):
+                            step_classes = [step[1].__class__ for step in self.pipeline[c].best_estimator_.steps]
+                            for i, sel in enumerate(self.selection[c]):
+                                self.selection[c][i] = self.pipeline[c].best_estimator_.steps[step_classes.index(sel.__class__)][1]
+                        self.clf[c] = self.pipeline[c].best_estimator_._final_estimator
+                        # self.pipeline[c] = self.pipeline[c].best_estimator_
+
+                        train_cache[f][c] = Pipeline(self.steps[c][:-1]).transform(images_train)
+
+                    if test_cache[f][c] is None:
+                        test_cache[f][c] = Pipeline(self.steps[c][:-1]).transform(images_test)
+                    predictions = self.clf[c].predict(test_cache[f][c])
+                    if self.param_grid[c] is not None:
+                        result_channels[c][s]['grid_scores'][f] = \
+                            [score.mean_validation_score for score in self.pipeline[c].grid_scores_]
+                    if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(X, np.ndarray):
+                        features = np.ones(X.shape[1], dtype=bool)
+                        if 'feature_importance' not in result_channels[c][s]:
+                            result_channels[c][s]['feature_importance'] = np.full((n_folds, X.shape[1]), np.nan)
+                        for sel in self.selection[c]:
+                            features[features] = sel.get_support()
+                        contrib = ti.predict(self.clf[c], np.array(test_cache[f][c]))[2]
+                        result_channels[c][s]['feature_importance'][f, features] = \
+                            np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
+                    elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
+                        if 'feature_importance' not in result_channels[c][s]:
+                            result_channels[c][s]['feature_importance'] = dict()
+                        if self.selection:
+                            features = dict()
+                            for sel in self.selection[c]:
+                                for k, v in sel.get_support().items():
+                                    if k not in features:
+                                        features[k] = v
+                                    else:
+                                        features[k][features[k]] = v
+                        else:
+                            features = {k: np.ones(len(v[0]), dtype=bool) for k, v in test_cache[f][c].items()}
+                        for k in features.keys():
+                            if k not in result_channels[c][s]['feature_importance']:
+                                result_channels[c][s]['feature_importance'][k] = np.full((n_folds, len(features[k])), np.nan)
+                            contrib = ti.predict(self.clf[c].estimators_[k], test_cache[f][c][k])[2]
+                            result_channels[c][s]['feature_importance'][k][f, features[k]] = \
+                                np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
+
+                    result_channels[c][s]['y_pred'][test_index] = predictions.astype(float)
+                    if hasattr(self.clf[c], 'votes_pooled'):
+                        result_channels[c][s]['votes_pooled'][test_index] = self.clf[c].votes_pooled
+                    if hasattr(self.clf[c], 'votes'):
+                        result_channels[c][s]['votes'][:, test_index] = np.array(self.clf[c].votes)
+
+
+                if self.n_channels > 1:
+                    if self.is_regression:
+                        result_meta[s]['y_pred'][test_index] = \
+                            np.mean([channel[s]['y_pred'][test_index] for channel in result_channels], axis=0)
                     else:
-                        features = {k: np.ones(len(v[0]), dtype=bool) for k, v in preproc_test.items()}
-                    for k in features.keys():
-                        if k not in forest_contrib:
-                            forest_contrib[k] = np.full((n_folds, n_seeds, len(features[k])), np.nan)
-                        contrib = ti.predict(self.clf.estimators_[k], preproc_test[k])[2]
-                        forest_contrib[k][f, j, features[k]] = np.mean(contrib if self.cfg.regression else contrib[:, :, 0], axis=0)
-                y_pred = np.append(y_pred, predictions)
-                y_true = np.append(y_true, labels_test)
+                        result_meta[s]['y_pred'][test_index] = \
+                            np.round(np.mean([channel[s]['y_pred'][test_index] for channel in result_channels], axis=0))
+                    # result_meta[s]['y_pred'][test_index] = \
+                    #     self.meta_predict(self.y_true[train_index],
+                    #                       [self.clf[ch].predict(train_cache[f][ch]) for ch in range(self.n_channels)],
+                    #                       [channel[s]['y_pred'][test_index] for channel in result_channels])
 
-                for i, k in enumerate(test_index):
-                    result['predictions_seed'][k][j] = float(predictions[i])
-                    result['labels_seed'][k][j] = labels_test[i]
-                    result['correct_seed'][k][j] = bool(predictions[i] == labels_test[i])
-                    if hasattr(self.clf, 'votes_pooled'):
-                        result['votes_pooled_seed'][k][j] = self.clf.votes_pooled[i]
-                    if hasattr(self.clf, 'votes'):
-                        result['votes_seed'][k][j] = [v[i].tolist() for v in self.clf.votes]
+        result = dict()
+        for c in range(self.n_channels):
+            pfx = '%g_' % c if self.multi_channel else ''
+            result = self.assess_performance(pfx, result_channels[c], container=result)
 
-                if self.param_grid is not None:
-                    grid_scores_fold_seed[f][j] = [score.mean_validation_score for score in self.pipeline.grid_scores_]
+            if hasattr(self.clf[c], 'votes'):
+                result[pfx + 'votes'] = np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds)], axis=0).tolist()
+            if hasattr(self.clf[c], 'votes_pooled'):
+                result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds)], axis=0).tolist()
 
-            for k in test_index:
-                result['predictions'][k] = np.mean(result['predictions_seed'][k], axis=0)
-                result['correct'][k] = np.mean(result['correct_seed'][k], axis=0)
-            if hasattr(self.clf, 'votes'):
-                for k in test_index:
-                    result['votes'][k] = np.mean(result['votes_seed'][k], axis=0).tolist()
-            if hasattr(self.clf, 'votes_pooled'):
-                for k in test_index:
-                    result['votes_pooled'][k] = np.mean(result['votes_pooled_seed'][k], axis=0)
+            if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(X, np.ndarray):
+                with warnings.catch_warnings():  # catch stupid behavior of nanmean
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds)], axis=(0, 1)).tolist()
+            elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
+                result[pfx + 'forest_contrib'] = {}
+                with warnings.catch_warnings():  # catch stupid behavior of nanmean
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    for k in result_channels[0][c]['feature_importance'].keys():
+                        result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds)], axis=(0,1)).tolist()
 
-            if (verbose > 2) and hasattr(self.clf, 'votes'):
-                print('votes:', *np.array([result['votes'][i] for i in test_index]).swapaxes(0, 1).tolist(), sep='\n')
-            if (verbose > 2) and hasattr(self.clf, 'votes_pooled'):
-                print('pooled votes: ', [result['votes_pooled'][i] for i in test_index])
+            if self.param_grid[c] is not None:
+                grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds)], axis=(0, 1)).tolist()
+                grid_scores_ste = (np.std(np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds)], axis=1), axis=0) / n_folds).tolist()
+                result[pfx + 'grid_scores'] = [(param, grid_scores_mean[i], grid_scores_ste[i]) for i, param in
+                                                      enumerate([score.parameters for score in self.pipeline[c].grid_scores_])]
 
-        scorer = r2_score if self.cfg.regression else accuracy_score
-        result['accuracy'] = scorer(y_true, y_pred)
-        label_swap = np.swapaxes(result['labels_seed'], 0, 1)
-        pred_swap = np.swapaxes(result['predictions_seed'], 0, 1)
-        result['accuracy_seed'] = [scorer(l, p) for l, p in zip(label_swap, pred_swap)]
-        result['accuracy_ste'] = np.std(result['accuracy_seed'] / np.sqrt(n_seeds))
-        if isinstance(self.clf, (RandomForestRegressor, RandomForestClassifier)):
-            with warnings.catch_warnings():  # catch stupid behavior of nanmean
-                warnings.simplefilter("ignore", RuntimeWarning)
-                result['forest_contrib_seed'] = np.nanmean(forest_contrib, axis=0).tolist()
-                result['forest_contrib'] = np.nanmean(result['forest_contrib_seed'], axis=0).tolist()
-        elif isinstance(self.clf, RoiEnsemble) and isinstance(self.clf.base_estimator, (RandomForestRegressor, RandomForestClassifier)):
-            result['forest_contrib_seed'], result['forest_contrib'] = {}, {}
-            with warnings.catch_warnings():  # catch stupid behavior of nanmean
-                warnings.simplefilter("ignore", RuntimeWarning)
-                for k in forest_contrib.keys():
-                    result['forest_contrib_seed'][k] = np.nanmean(forest_contrib[k], axis=0).tolist()
-                    result['forest_contrib'][k] = np.nanmean(result['forest_contrib_seed'][k], axis=0).tolist()
-
-        if self.cfg.regression:
-            result['explained_variance'] = explained_variance_score(y_true, y_pred).tolist()
-        else:
-            result['confusion_matrix'] = confusion_matrix(y_true, y_pred).tolist()
-            result['classification_report'] = classification_report(y_true, y_pred, target_names=self.cfg.label_names)
+        if self.n_channels > 1:
+            result = self.assess_performance('', result_meta, container=result)
+            print('meta:', result['predictions'])
 
         if verbose:
             print('***************************************************')
-            print("Accuracy: %.5f +- %.5f %s" % (result['accuracy'], result['accuracy_ste'],
-                  ['%.5f' % acc for acc in result['accuracy_seed']]))
-            if self.cfg.regression:
-                print('Explained variance: %.4f%%' % 100 * result['explained_variance'])
-            else:
-                print(result['classification_report'])
+            for c in range(self.n_channels):
+                pfx = '%g_' % c if self.multi_channel else ''
+
+                print('***********       Channel (%g / %g)       ***********' % (c + 1, self.n_channels))
+                print("Accuracy: %.5f +- %.5f %s" % (result[pfx + 'accuracy'], result[pfx + 'accuracy_ste'],
+                      ['%.5f' % acc for acc in result[pfx + 'accuracy_seed']]))
+                if self.is_regression:
+                    print('Explained variance: %.4f%%' % (100 * result[pfx + 'explained_variance']))
+                else:
+                    print(result[pfx + 'classification_report'])
+
+                if verbose > 2:
+                    if hasattr(self.clf[c], 'votes'):
+                        print('votes:', *np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds)], axis=0), sep='\n')
+                    if hasattr(self.clf[c], 'votes_pooled'):
+                        print('votes pooled:', np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds)], axis=0))
+                    if self.param_grid[c] is not None:
+                        for param, av, ste in result[pfx + 'grid_scores']:
+                            print('%s: %.5f +- %.5f' % (param, av, ste))
+            if self.n_channels > 1:
+                print('************       Meta Results       ************')
+                print("Accuracy: %.5f +- %.5f %s" % (result['accuracy'], result['accuracy_ste'],
+                      ['%.5f' % acc for acc in result['accuracy_seed']]))
+                if self.is_regression:
+                    print('Explained variance: %.4f%%' % 100 * result['explained_variance'])
+                else:
+                    print(result['classification_report'])
             if self.name:
                 print('\tof << %s >>' % self.name)
             print('***************************************************')
 
-        if self.param_grid is not None:
-            grid_scores_mean = np.mean(grid_scores_fold_seed, axis=(0, 1)).tolist()
-            grid_scores_ste = (np.std(np.mean(grid_scores_fold_seed, axis=1), axis=0) / len(cv_outer)).tolist()
-            result['grid_scores'] = [(param, grid_scores_mean[i], grid_scores_ste[i]) for i, param in
-                                                  enumerate([score.parameters for score in self.pipeline.grid_scores_])]
-            if verbose > 2:
-                for param, av, ste in result['grid_scores']:
-                    print('%s: %.5f +- %.5f' % (param, av, ste))
-
         return result
+
+    def assess_performance(self, pfx, result, container=None):
+        if container is None:
+            container = dict()
+        container[pfx + 'predictions'] = np.mean([result[s]['y_pred'] for s in range(self.n_seeds)], axis=0).tolist()
+
+        container[pfx + 'accuracy_seed'] = [self.scorer(self.y_true, result[s]['y_pred'] if self.is_regression else np.round(result[s]['y_pred'])) for s in range(self.n_seeds)]
+        container[pfx + 'accuracy_ste'] = np.std(container[pfx + 'accuracy_seed'] / np.sqrt(self.n_seeds)).tolist()
+        container[pfx + 'accuracy'] = np.mean(container[pfx + 'accuracy_seed']).tolist()
+
+        if self.is_regression:
+            container[pfx + 'explained_variance'] = explained_variance_score(self.y_true, container[pfx + 'predictions']).tolist()
+        else:
+            container[pfx + 'confusion_matrix'] = confusion_matrix(self.y_true, np.round(container[pfx + 'predictions'])).tolist()
+            container[pfx + 'classification_report'] = \
+                classification_report(self.y_true, np.round(container[pfx + 'predictions']),
+                                      target_names=self.label_names)
+
+        return container
+
+    def meta_predict(self, y_true_train, y_pred_train_list, y_pred_test_list):
+        acc = [np.mean(y_true_train == y_pred_train) for y_pred_train in y_pred_train_list]
+        weighted_mean = np.array(y_pred_test_list).swapaxes(0, 1).dot(acc) / np.sum(acc)
+
+        if self.is_regression:
+            return weighted_mean
+        else:
+            return [np.round(wm) if wm % 0.5 else y_pred_test_list[np.argsort(acc)[-1]][i] for i, wm in enumerate(weighted_mean)]
 
     def construct_pipe(self, n_jobs, seed, verbose):
 
-        self.param_grid = dict()
+        self.masker, self.clf, self.param_grid, self.steps, self.pipeline = [None] * self.n_channels, \
+                  [None] * self.n_channels, [None] * self.n_channels, [None] * self.n_channels, [None] * self.n_channels
+        self.selection = [[] for _ in range(self.n_channels)]
 
-        # Masker
-        if not hasattr(self.cfg, 'masker_args') or (not hasattr(self.cfg, 'masker') and not self.cfg.masker):
-            self.cfg.masker_args = dict()
-        if hasattr(self.cfg, 'masker') and not self.cfg.masker:
-            self.cfg.masker = DummyMasker
+        for c in range(self.n_channels):
 
-        if np.any([isinstance(v, list) for v in self.cfg.masker_args.values()]):
-            for k, v in self.cfg.masker_args.items():
-                if k != 'rois' and isinstance(v, list):
-                    self.param_grid['masker__%s' % k] = v
+            self.param_grid[c] = dict()
 
-        pipes = [('masker', self.cfg.masker(**self.cfg.masker_args))] if hasattr(self.cfg, 'masker') \
-           else [('masker', NiftiMasker(**self.cfg['masker_args']))]
-        self.masker = pipes[0][1]
+            if np.any([isinstance(v, list) for v in self.scheme.masker_args[c].values()]):
+                for k, v in self.scheme.masker_args[c].items():
+                    if k != 'rois' and isinstance(v, list):
+                        self.param_grid[c]['masker__%s' % k] = v
 
-        if 'smoothing_fwhm' in self.cfg.masker_args and isinstance(self.cfg.masker_args['smoothing_fwhm'], list):
-            self.param_grid['masker__smoothing_fwhm'] = self.cfg.masker_args['smoothing_fwhm']
+            pipes = [('masker', self.scheme.masker[c](**self.scheme.masker_args[c]))]
+            self.masker[c] = pipes[0][1]
 
-        fs_list = self.cfg.fs if isinstance(self.cfg.fs, Sequence) else (self.cfg.fs, )
-        fs_types = [f.fs_type for f in fs_list]
+            if 'smoothing_fwhm' in self.scheme.masker_args[c] and isinstance(self.scheme.masker_args[c]['smoothing_fwhm'], list):
+                self.param_grid[c]['masker__smoothing_fwhm'] = self.scheme.masker_args[c]['smoothing_fwhm']
 
-        # variance-based feature selection
-        if 'variance' in fs_types:
-            fs = fs_list[fs_types.index('variance')]
-            variance_threshold = MultiRoiVarianceThreshold() if isinstance(pipes[0][1], MultiRoiMasker) \
-                            else VarianceThreshold()
-            for k, v in fs.fs_args.items():
-                if isinstance(v, list):
-                    self.param_grid['fs_variance__%s' % k] = v
+            fs_names = [f.name for f in self.scheme.pipeline[c].fs] if self.scheme.pipeline[c].fs is not None else []
+
+            # variance-based feature selection
+            if 'variance' in fs_names:
+                fs = self.scheme.pipeline[c].fs[fs_names.index('variance')]
+                variance_threshold = MultiRoiVarianceThreshold() if self.scheme.is_multiroi[c] \
+                                else VarianceThreshold()
+                for k, v in fs.fs_args.items():
+                    if isinstance(v, list):
+                        self.param_grid[c]['fs_variance__%s' % k] = v
+                    else:
+                        variance_threshold.set_params(**{k: v})
+                pipes.append(('fs_variance', variance_threshold))
+                self.selection[c].append(variance_threshold)
+
+            # F-test-based feature selection
+            if 'percentile' in fs_names:
+                fs = self.scheme.pipeline[c].fs[fs_names.index('percentile')]
+                f_score = f_regression if self.scheme.pipeline[c].clf.regression else f_classif
+                percentile = MuliRoiSelectPercentile(score_func=f_score) if \
+                    self.scheme.is_multiroi[c] else SelectPercentile(score_func=f_score)
+                for k, v in fs.fs_args.items():
+                    if isinstance(v, list):
+                        self.param_grid[c]['fs_anova__%s' % k] = v
+                    else:
+                        percentile.set_params(**{k: v})
+                pipes.append(('fs_anova', percentile))
+                self.selection[c].append(percentile)
+
+            # model-based feature selection
+            if 'model' in fs_names or 'nested' in fs_names:
+                fs = self.scheme.pipeline[c].fs[fs_names.index(('nested', 'model')['model' in fs_names])]
+                if self.scheme.is_multiroi[c]:
+                    select_from = MultiRoiSelectFromModel
                 else:
-                    variance_threshold.set_params(**{k: v})
-            pipes.append(('fs_variance', variance_threshold))
-            self.selection.append(variance_threshold)
-
-        # F-test-based feature selection
-        if 'percentile' in fs_types:
-            fs = fs_list[fs_types.index('percentile')]
-            f_score = f_regression if self.cfg.regression else f_classif
-            percentile = MuliRoiSelectPercentile(score_func=f_score) if \
-                isinstance(pipes[0][1], MultiRoiMasker) else SelectPercentile(score_func=f_score)
-            for k, v in fs.fs_args.items():
-                if isinstance(v, list):
-                    self.param_grid['fs_anova__%s' % k] = v
-                else:
-                    percentile.set_params(**{k: v})
-            pipes.append(('fs_anova', percentile))
-            self.selection.append(percentile)
-
-        # model-based feature selection
-
-        if 'model' in fs_types:
-            fs = fs_list[fs_types.index('model')]
-            if isinstance(pipes[0][1], MultiRoiMasker):
-                select_from = MultiRoiSelectFromModel
-            else:
-                select_from = SelectFromModel
-            if fs.fs_args['model'] == 'nested':
-                nested_clf = self.cfg.clf(**self.cfg.clf_args)
-                for k, v in self.cfg.clf_args.items():
-                    if isinstance(v, list):
-                        self.param_grid['fs_model__estimator__%s' % k] = v
-                fs_model = select_from(nested_clf, threshold=fs.fs_args['threshold'])
-            else:
-                if 'model_args' not in fs.fs_args:
-                    fs.fs_args['model_args'] = dict()
-                for k, v in fs.fs_args['model_args'].items():
-                    if isinstance(v, list):
-                        self.param_grid['fs_model__estimator__%s' % k] = v
-                fs_model = select_from(fs.fs_args['model'](**fs.fs_args['model_args']), threshold=fs.fs_args['threshold'])
-            if isinstance(fs.fs_args['threshold'], list):
-                self.param_grid['fs_model__threshold'] = fs.fs_args['threshold']
-
-            pipes.append(('fs_model', fs_model))
-            self.selection.append(fs_model)
-
-        # model-based selection of ROIs
-        if 'roi' in fs_types:
-            fs = fs_list[fs_types.index('roi')]
-            if fs.fs_args['roi_model'] == 'nested':
-                for k, v in self.cfg.clf_args.items():
-                    if isinstance(v, list):
-                        self.param_grid['fs_roi__estimator__%s' % k] = v
-                if 'base_estimator_args' in self.cfg.clf_args:
-                    for k, v in self.cfg.clf_args['base_estimator_args'].items():
+                    select_from = SelectFromModel
+                if fs.fs_args['model'] == 'nested':
+                    nested_clf = self.scheme.pipeline[c].clf.clf(**self.scheme.pipeline[c].clf.clf_args)
+                    for k, v in self.scheme.pipeline[c].clf.clf_args.items():
                         if isinstance(v, list):
-                            self.param_grid['fs_roi__estimator__base_estimator__%s' % k] = v
-                fs_roi = SelectRoisFromModel(self.cfg.clf(**self.cfg.clf_args), criterion=fs.fs_args['roi_criterion'])
+                            self.param_grid[c]['fs_model__estimator__%s' % k] = v
+                    fs_model = select_from(nested_clf, threshold=fs.fs_args['threshold'])
+                else:
+                    if 'model_args' not in fs.fs_args:
+                        fs.fs_args['model_args'] = dict()
+                    for k, v in fs.fs_args['model_args'].items():
+                        if isinstance(v, list):
+                            self.param_grid[c]['fs_model__estimator__%s' % k] = v
+                    fs_model = select_from(fs.fs_args['model'](**fs.fs_args['model_args']), threshold=fs.fs_args['threshold'])
+                if isinstance(fs.fs_args['threshold'], list):
+                    self.param_grid[c]['fs_model__threshold'] = fs.fs_args['threshold']
+
+                pipes.append(('fs_model', fs_model))
+                self.selection[c].append(fs_model)
+
+            # model-based selection of ROIs
+            if 'roi' in fs_names:
+                fs = self.scheme.pipeline[c].fs[fs_names.index('roi')]
+                if fs.fs_args['roi_model'] == 'nested':
+                    for k, v in self.scheme.pipeline[c].clf.clf_args.items():
+                        if isinstance(v, list):
+                            self.param_grid[c]['fs_roi__estimator__%s' % k] = v
+                    if 'base_estimator_args' in self.scheme.pipeline[c].clf.clf_args:
+                        for k, v in self.scheme.pipeline[c].clf.clf_args['base_estimator_args'].items():
+                            if isinstance(v, list):
+                                self.param_grid[c]['fs_roi__estimator__base_estimator__%s' % k] = v
+                    fs_roi = SelectRoisFromModel(self.scheme.pipeline[c].clf.clf(**self.scheme.pipeline[c].clf.clf_args),
+                                                 criterion=fs.fs_args['roi_criterion'])
+                else:
+                    if 'roi_model_args' not in fs.fs_args:
+                        fs.fs_args['roi_model_args'] = dict()
+                    for k, v in fs.fs_args['roi_model_args'].items():
+                        if isinstance(v, list):
+                            self.param_grid[c]['fs_roi__estimator__%s' % k] = v
+                    fs_roi = SelectRoisFromModel(fs.fs_args['roi_model'](**fs.fs_args['roi_model_args']), criterion=fs.fs_args['roi_criterion'])
+                if isinstance(fs.fs_args['roi_criterion'], list):
+                    self.param_grid[c]['fs_roi__criterion'] = fs.fs_args['roi_criterion']
+                pipes.append(('fs_roi', fs_roi))
+                self.selection[c].append(fs_roi)
+
+
+            # classifier
+            if 'class_weight' in signature(self.scheme.pipeline[c].clf.clf.__init__).parameters.keys():
+                self.scheme.pipeline[c].clf.clf_args.update(class_weight='balanced')
+            if self.scheme.is_multiroi[c]:
+                be_dict = {'base_estimator': self.scheme.pipeline[c].clf.clf(**self.scheme.pipeline[c].clf.clf_args)}
+                self.clf[c] = self.scheme.clf_multiroi(**{**be_dict, **self.scheme.clf_multiroi_args})
+                if np.any([isinstance(v, list) for v in self.scheme.pipeline[c].clf.clf_args.values()]):
+                    for k, v in self.scheme.pipeline[c].clf.clf_args.items():
+                        if isinstance(v, list):
+                            self.param_grid[c]['clf__base_estimator__%s' % k] = v
+                # if 'base_estimator_args' in self.scheme.pipeline[c].clf.clf_args and \
+                #         np.any([isinstance(v, list) for v in self.scheme.pipeline[c].clf.clf_args['base_estimator_args'].values()]):
+                #     for k, v in self.scheme.pipeline[c].clf.clf_args['base_estimator_args'].items():
+                #         if isinstance(v, list):
+                #             self.param_grid[c]['clf__base_estimator__%s' % k] = v
             else:
-                if 'roi_model_args' not in fs.fs_args:
-                    fs.fs_args['roi_model_args'] = dict()
-                for k, v in fs.fs_args['roi_model_args'].items():
-                    if isinstance(v, list):
-                        self.param_grid['fs_roi__estimator__%s' % k] = v
-                fs_roi = SelectRoisFromModel(fs.fs_args['roi_model'](**fs.fs_args['roi_model_args']), criterion=fs.fs_args['roi_criterion'])
-            if isinstance(fs.fs_args['roi_criterion'], list):
-                self.param_grid['fs_roi__criterion'] = fs.fs_args['roi_criterion']
-            pipes.append(('fs_roi', fs_roi))
-            self.selection.append(fs_roi)
+                self.clf[c] = self.scheme.pipeline[c].clf.clf(**self.scheme.pipeline[c].clf.clf_args)
+                if np.any([isinstance(v, list) for v in self.scheme.pipeline[c].clf.clf_args.values()]):
+                    for k, v in self.scheme.pipeline[c].clf.clf_args.items():
+                        if isinstance(v, list):
+                            self.param_grid[c]['clf__%s' % k] = v
+            pipes.append(('clf', self.clf[c]))
 
+            if not len(self.param_grid[c]):
+                self.param_grid[c] = None
 
-        # classifier
-        if 'class_weight' in signature(self.cfg.clf.__init__).parameters.keys():
-            self.cfg.clf_args.update(class_weight='balanced')
-        self.clf = self.cfg.clf(**self.cfg.clf_args)
-        if np.any([isinstance(v, list) for v in self.cfg.clf_args.values()]):
-            for k, v in self.cfg.clf_args.items():
-                if isinstance(v, list):
-                    self.param_grid['clf__%s' % k] = v
-        if 'base_estimator_args' in self.cfg.clf_args and \
-                np.any([isinstance(v, list) for v in self.cfg.clf_args['base_estimator_args'].values()]):
-            for k, v in self.cfg.clf_args['base_estimator_args'].items():
-                if isinstance(v, list):
-                    self.param_grid['clf__base_estimator__%s' % k] = v
-        pipes.append(('clf', self.clf))
-
-        if not len(self.param_grid):
-            self.param_grid = None
-
-        # create final pipeline and parameter grid
-        self.pipeline = Pipeline(pipes)
-        self.steps = OrderedDict(self.pipeline.steps)
-        if self.param_grid is not None:
-            self.pipeline = GridSearchCV(self.pipeline, param_grid=self.param_grid, n_jobs=n_jobs, verbose=verbose-3,
-                                         refit=True, cv=3, scoring='accuracy')
+            # create final pipeline and parameter grid
+            self.pipeline[c] = Pipeline(pipes)
+            self.steps[c] = self.pipeline[c].steps
+            if self.param_grid[c] is not None:
+                self.pipeline[c] = GridSearchCV(self.pipeline[c], param_grid=self.param_grid[c], n_jobs=n_jobs, verbose=verbose-3,
+                                             refit=True, cv=3, scoring='accuracy')
