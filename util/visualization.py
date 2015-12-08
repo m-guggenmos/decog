@@ -1,13 +1,14 @@
 import numpy as np
+from mgplot.barplot import hbar
+from sklearn import tree
+from sklearn.externals.six import StringIO
+import pydotplus as pydot
+from matplotlib import pyplot as plt
+import matplotlib.image as mpimg
+import io
 
 
 def decision_trees(clf, drawing_param, nFeatures=None, show_trees=True, show_importance=True, showfig=True):
-    from sklearn import tree
-    from sklearn.externals.six import StringIO
-    import pydot
-    from matplotlib import pyplot as plt
-    import matplotlib.image as mpimg
-    import mgplot.plotting as myplt
 
     clfs = clf.estimators_ if hasattr(clf, 'estimators_') else [clf]
 
@@ -20,7 +21,7 @@ def decision_trees(clf, drawing_param, nFeatures=None, show_trees=True, show_imp
 
             # create image from graph
             png_str = graph.create_png(prog='dot')
-            sio = StringIO()
+            sio = io.BytesIO()
             sio.write(png_str)
             sio.seek(0)
             img = mpimg.imread(sio)
@@ -40,7 +41,7 @@ def decision_trees(clf, drawing_param, nFeatures=None, show_trees=True, show_imp
         print("%d. feature %d = %f [%s]" % (i + 1, f, importances[f], drawing_param['feature_names'][f]))
 
     if show_importance:
-        axis = myplt.hbar([tree.feature_importances_ for tree in clfs], figtitle='Feature importance', nBars=nFeatures,
+        axis = hbar([tree_.feature_importances_ for tree_ in clfs], figtitle='Feature importance', nBars=nFeatures,
                           yticknames=drawing_param['feature_names'], xlabel='Gini importance', sort='descend')[0]
         axis.figure.tight_layout()
         if showfig:

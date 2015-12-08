@@ -12,15 +12,8 @@ from sklearn.base import clone
 class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
 
     def __init__(self, verbose=0, n_jobs=1, random_state=None, base_estimator=LinearSVC(), base_estimator_args=None,
-                 searchlight=False, regression=False, continuous=False):
+                 continuous=False):
 
-        """
-
-        Args:
-            combine_rois (bool): whether data of rois should be combined or act as independent votes
-            searchlight (bool): whether the classifier is searchlight-based
-
-        """
         if base_estimator_args is None:
             base_estimator_args = dict()
 
@@ -34,8 +27,6 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
         # for k, v in base_estimator_args.items():
         #     self.__setattr__(k, v)
 
-        self.searchlight = searchlight
-        self.regression = regression
         self.continuous = continuous
 
         self.n_jobs = n_jobs
@@ -60,7 +51,7 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
         if not isinstance(X, dict):
             raise ValueError("X has to be a dict")
 
-        if not self.regression:
+        if self.base_estimator._estimator_type == 'classifier':
             self.classes_ = np.unique(y)
 
         self.set_random_state()
@@ -69,11 +60,11 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
         for roi_id, x in X.items():
             estimator = clone(self.base_estimator)
             estimator.roi_id = roi_id
-            if self.searchlight:
+            if self.base_estimator._estimator_type == 'searchlight_ensemble':
                 estimator.set_params(process_mask_img=x[1])
             estimators[roi_id] = estimator
 
-        if self.searchlight:
+        if self.base_estimator._estimator_type == 'searchlight_ensemble':
             estimators = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
                          delayed(_parallel_build_estimator)(e, X[roi_id][0], y) for roi_id, e in estimators.items())
         else:
@@ -109,17 +100,14 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
         if not isinstance(X, dict):
             raise ValueError("X has to be a dict")
 
-        if self.searchlight:
+        if self.base_estimator._estimator_type == 'searchlight_ensemble':
             self.votes = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
                          delayed(_vote)(e, X[roi_id][0], self.continuous) for roi_id, e in self.estimators_.items())
         else:
             self.votes = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
                          delayed(_vote)(e, X[roi_id], self.continuous) for roi_id, e in self.estimators_.items())
 
-        if self.regression:
-            self.votes_pooled = np.mean(self.votes, axis=0)
-            self.predictions = self.votes_pooled
-        else:
+        if self.base_estimator._estimator_type == 'classifier':
             if self.continuous:
                 if len(X) == 1:
                     vote = np.sign(self.votes[0]) / 2. + 0.5
@@ -130,6 +118,9 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
                 self.predictions = self.classes_[vote.astype(int)]
             else:
                 self.predictions = mode(self.votes)[0][0]
+        else:
+            self.votes_pooled = np.mean(self.votes, axis=0)
+            self.predictions = self.votes_pooled
 
 
         return self.predictions

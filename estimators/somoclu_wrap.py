@@ -11,20 +11,26 @@
 from sys import version_info
 if version_info >= (2, 6, 0):
     def swig_import_helper():
-        from os.path import dirname
-        import imp
-        fp = None
-        try:
-            fp, pathname, description = imp.find_module('_somoclu_wrap', [dirname(__file__)])
-        except ImportError:
-            import _somoclu_wrap
-            return _somoclu_wrap
-        if fp is not None:
-            try:
-                _mod = imp.load_module('_somoclu_wrap', fp, pathname, description)
-            finally:
-                fp.close()
-            return _mod
+        # from os.path import dirname
+        # # import imp
+        import importlib
+        # fp = None
+        # try:
+        #     # fp, pathname, description = imp.find_module('_somoclu_wrap', [dirname(__file__)])
+        #     fp, pathname, description = importlib.import_module('_somoclu_wrap', dirname(__file__))
+        # except ImportError:
+        #     import _somoclu_wrap
+        #     return _somoclu_wrap
+        # if fp is not None:
+        #     try:
+        #         # _mod = imp.load_module('_somoclu_wrap', fp, pathname, description)
+        #         _mod = importlib.load_module('_somoclu_wrap', fp, pathname, description)
+        #     finally:
+        #         fp.close()
+        #     return _mod
+        # _mod = _mod = importlib.load_module('_somoclu_wrap', fp, pathname, description)
+        import decereb.estimators._somoclu_wrap as mod
+        return mod
     _somoclu_wrap = swig_import_helper()
     del swig_import_helper
 else:

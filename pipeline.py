@@ -48,7 +48,7 @@ class Link:
         self.db_key_str = str(self.db_key)[12:-1]
 
         self.db_info = OrderedDict(
-            sum([[('%s%s' % (('', '%g_' % c)[self.n_channels > 1], info), channel[info]) for c, channel in enumerate(self.scheme.data)] for info in ['labels', 'subjects']], [])
+            sum([[('%s%s' % (('', '%g_' % c)[self.n_channels > 1], info), channel[info]) for c, channel in enumerate(self.scheme.data)] for info in ['labels', 'subjects', 'label_names', 'feature_names']], [])
             # sum([[('%g_%s' % (c, k), v) for k, v in channel.clf.opt_args.items()] for c, channel in enumerate(self.scheme.pipeline)], [])
         )
 
@@ -230,6 +230,7 @@ class Analysis:
         self.n_channels = len(self.scheme.data)
         self.multi_channel = self.n_channels > 1
 
+        self.n_folds = None
         self.n_seeds = None
         self.n_samples = None
         self.is_regression = None
@@ -259,60 +260,63 @@ class Analysis:
         self.label_names = self.scheme.data[0].label_names
         self.scorer = r2_score if self.is_regression else accuracy_score
 
-        self.n_seeds = len(self.scheme.seed_list)
+        seed_lists = [channel.clf.seed_list for channel in self.scheme.pipeline]
+        self.n_seeds = [len(sl) for sl in seed_lists]
         self.n_samples = len(self.scheme.data[0].labels)
 
-        result_channels = [[None] * self.n_seeds for _ in range(self.n_channels)]
-        if self.n_channels > 1:
-            result_meta = [None] * self.n_seeds
-        train_cache = None
-        test_cache = None
+        if self.is_regression:
+            cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+        else:
+            cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+        # cv_outer = LeaveOneOut(len(self.y))
 
-        for s, seed_ in enumerate(self.scheme.seed_list):
+        self.n_folds = len(cv_outer)
 
-            if self.is_regression:
-                cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
-            else:
-                cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
-            # cv_outer = LeaveOneOut(len(self.y))
 
-            n_folds = len(cv_outer)
-            
-            if train_cache is None:
-                train_cache = [None] * n_folds
-            if test_cache is None:
-                test_cache = [None] * n_folds
-
-            for ch in range(self.n_channels):
-                result_channels[ch][s] = dict(
+        result_channels = [[None] * self.n_seeds[c] for c in range(self.n_channels)]
+        for c in range(self.n_channels):
+            for s in range(self.n_seeds[c]):
+                result_channels[c][s] = dict(
                     y_pred=np.full(self.n_samples, np.nan),
-                    grid_scores=[None] * n_folds
+                    grid_scores=[None] * self.n_folds
                 )
-                if self.scheme.is_multiroi[ch]:
-                    result_channels[ch][s].update(
+                if self.scheme.is_multiroi[c]:
+                    result_channels[c][s].update(
                         votes=np.full((len(self.scheme.masker_args[0]['rois']), self.n_samples), np.nan),
                         votes_pooled=np.full(self.n_samples, np.nan),
                     )
+        train_cache = None
+        test_cache = None
 
-            if self.n_channels > 1:
-                result_meta[s] = dict(
-                    y_pred=np.full(self.n_samples, np.nan)
-                )
 
-            for f, (train_index, test_index) in enumerate(cv_outer):
-                
-                if train_cache[f] is None:
-                    train_cache[f] = [None] * self.n_channels
-                if test_cache[f] is None:
-                    test_cache[f] = [None] * self.n_channels                
+        if train_cache is None:
+            train_cache = [None] * self.n_folds
+        if test_cache is None:
+            test_cache = [None] * self.n_folds
 
-                for c in range(self.n_channels):
 
-                    X = self.scheme.data[c].data
+
+        if self.n_channels > 1:
+            result_meta = dict(
+                y_pred=np.full(self.n_samples, np.nan)
+            )
+
+        for f, (train_index, test_index) in enumerate(cv_outer):
+
+            if train_cache[f] is None:
+                train_cache[f] = [None] * self.n_channels
+            if test_cache[f] is None:
+                test_cache[f] = [None] * self.n_channels
+
+            for c in range(self.n_channels):
+
+                X = self.scheme.data[c].data
+
+                for s, seed_ in enumerate(seed_lists[c]):
 
                     if verbose > 1:
-                        print('[%s] Seed %g / %g Fold %g / %g Channel %g / %g' %
-                              (time.strftime("%d.%m %H:%M:%S"), s + 1, self.n_seeds, f + 1, n_folds, c + 1, self.n_channels))
+                        print('[%s] Fold %g / %g Channel %g / %g Seed %g / %g' %
+                              (time.strftime("%d.%m %H:%M:%S"), f + 1, self.n_folds, c + 1, self.n_channels, s + 1, self.n_seeds[c]))
                         if self.name:
                             print('\tof << %s >>' % self.name)
                     images_train = [X[i] for i in train_index]
@@ -356,7 +360,7 @@ class Analysis:
                     if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(X, np.ndarray):
                         features = np.ones(X.shape[1], dtype=bool)
                         if 'feature_importance' not in result_channels[c][s]:
-                            result_channels[c][s]['feature_importance'] = np.full((n_folds, X.shape[1]), np.nan)
+                            result_channels[c][s]['feature_importance'] = np.full((self.n_folds, X.shape[1]), np.nan)
                         for sel in self.selection[c]:
                             features[features] = sel.get_support()
                         contrib = ti.predict(self.clf[c], np.array(test_cache[f][c]))[2]
@@ -377,7 +381,7 @@ class Analysis:
                             features = {k: np.ones(len(v[0]), dtype=bool) for k, v in test_cache[f][c].items()}
                         for k in features.keys():
                             if k not in result_channels[c][s]['feature_importance']:
-                                result_channels[c][s]['feature_importance'][k] = np.full((n_folds, len(features[k])), np.nan)
+                                result_channels[c][s]['feature_importance'][k] = np.full((self.n_folds, len(features[k])), np.nan)
                             contrib = ti.predict(self.clf[c].estimators_[k], test_cache[f][c][k])[2]
                             result_channels[c][s]['feature_importance'][k][f, features[k]] = \
                                 np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
@@ -389,17 +393,17 @@ class Analysis:
                         result_channels[c][s]['votes'][:, test_index] = np.array(self.clf[c].votes)
 
 
-                if self.n_channels > 1:
-                    if self.is_regression:
-                        result_meta[s]['y_pred'][test_index] = \
-                            np.mean([channel[s]['y_pred'][test_index] for channel in result_channels], axis=0)
-                    else:
-                        result_meta[s]['y_pred'][test_index] = \
-                            np.round(np.mean([channel[s]['y_pred'][test_index] for channel in result_channels], axis=0))
-                    # result_meta[s]['y_pred'][test_index] = \
-                    #     self.meta_predict(self.y_true[train_index],
-                    #                       [self.clf[ch].predict(train_cache[f][ch]) for ch in range(self.n_channels)],
-                    #                       [channel[s]['y_pred'][test_index] for channel in result_channels])
+            if self.n_channels > 1:
+                vote = np.mean([np.mean([s['y_pred'][test_index] for s in ch], axis=0)
+                                for i, ch in enumerate(result_channels)], axis=0)
+                if self.is_regression:
+                    result_meta['y_pred'][test_index] = vote
+                else:
+                    result_meta['y_pred'][test_index] = np.round(vote)
+                # result_meta[s]['y_pred'][test_index] = \
+                #     self.meta_predict(self.y_true[train_index],
+                #                       [self.clf[ch].predict(train_cache[f][ch]) for ch in range(self.n_channels)],
+                #                       [channel[s]['y_pred'][test_index] for channel in result_channels])
 
         result = dict()
         for c in range(self.n_channels):
@@ -407,29 +411,29 @@ class Analysis:
             result = self.assess_performance(pfx, result_channels[c], container=result)
 
             if hasattr(self.clf[c], 'votes'):
-                result[pfx + 'votes'] = np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds)], axis=0).tolist()
+                result[pfx + 'votes'] = np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0).tolist()
             if hasattr(self.clf[c], 'votes_pooled'):
-                result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds)], axis=0).tolist()
+                result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0).tolist()
 
             if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(X, np.ndarray):
                 with warnings.catch_warnings():  # catch stupid behavior of nanmean
                     warnings.simplefilter("ignore", RuntimeWarning)
-                    result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds)], axis=(0, 1)).tolist()
+                    result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
             elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
                 result[pfx + 'forest_contrib'] = {}
                 with warnings.catch_warnings():  # catch stupid behavior of nanmean
                     warnings.simplefilter("ignore", RuntimeWarning)
                     for k in result_channels[0][c]['feature_importance'].keys():
-                        result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds)], axis=(0,1)).tolist()
+                        result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds[c])], axis=(0,1)).tolist()
 
             if self.param_grid[c] is not None:
-                grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds)], axis=(0, 1)).tolist()
-                grid_scores_ste = (np.std(np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds)], axis=1), axis=0) / n_folds).tolist()
+                grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
+                grid_scores_ste = (np.std(np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=1), axis=0) / self.n_folds).tolist()
                 result[pfx + 'grid_scores'] = [(param, grid_scores_mean[i], grid_scores_ste[i]) for i, param in
                                                       enumerate([score.parameters for score in self.pipeline[c].grid_scores_])]
 
         if self.n_channels > 1:
-            result = self.assess_performance('', result_meta, container=result)
+            result = self.assess_performance('', [result_meta], container=result)
             print('meta:', result['predictions'])
 
         if verbose:
@@ -447,9 +451,9 @@ class Analysis:
 
                 if verbose > 2:
                     if hasattr(self.clf[c], 'votes'):
-                        print('votes:', *np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds)], axis=0), sep='\n')
+                        print('votes:', *np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0), sep='\n')
                     if hasattr(self.clf[c], 'votes_pooled'):
-                        print('votes pooled:', np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds)], axis=0))
+                        print('votes pooled:', np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0))
                     if self.param_grid[c] is not None:
                         for param, av, ste in result[pfx + 'grid_scores']:
                             print('%s: %.5f +- %.5f' % (param, av, ste))
@@ -468,13 +472,14 @@ class Analysis:
         return result
 
     def assess_performance(self, pfx, result, container=None):
+        n_seeds = len(result)
         if container is None:
             container = dict()
-        container[pfx + 'predictions'] = np.mean([result[s]['y_pred'] for s in range(self.n_seeds)], axis=0).tolist()
+        container[pfx + 'predictions'] = np.mean([result[s]['y_pred'] for s in range(n_seeds)], axis=0).tolist()
 
-        container[pfx + 'accuracy_seed'] = [self.scorer(self.y_true, result[s]['y_pred'] if self.is_regression else np.round(result[s]['y_pred'])) for s in range(self.n_seeds)]
-        container[pfx + 'accuracy_ste'] = np.std(container[pfx + 'accuracy_seed'] / np.sqrt(self.n_seeds)).tolist()
-        container[pfx + 'accuracy'] = np.mean(container[pfx + 'accuracy_seed']).tolist()
+        container[pfx + 'accuracy_seed'] = [self.scorer(self.y_true, result[s]['y_pred'] if self.is_regression else np.round(result[s]['y_pred'])) for s in range(n_seeds)]
+        container[pfx + 'accuracy_ste'] = np.std(container[pfx + 'accuracy_seed'] / np.sqrt(n_seeds)).tolist()
+        container[pfx + 'accuracy'] = np.mean(self.y_true == np.round(container[pfx + 'predictions'])).tolist()
 
         if self.is_regression:
             container[pfx + 'explained_variance'] = explained_variance_score(self.y_true, container[pfx + 'predictions']).tolist()

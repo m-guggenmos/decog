@@ -16,7 +16,7 @@ from decereb.estimators.searchlight import SearchLight
 
 class SearchlightEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
 
-    _estimator_type = "ensemble"
+    _estimator_type = "searchlight_ensemble"
 
     def __init__(self, mask_img=None, process_mask_img=None, radius=4, base_estimator=LinearSVC(), n_estimators=5,
                  base_estimator_args=None, verbose=0, n_jobs=1):

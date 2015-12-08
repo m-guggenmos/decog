@@ -127,7 +127,7 @@ class SearchLight(BaseEstimator):
         if self.process_mask_img is not None:
             empty_ind = [i for i in range(A.shape[0]) if A[i,:].getnnz() == 0]
             if empty_ind:
-                warn('Skipping %g voxels of processing mask outside mask_img (first index: %g)' % (len(empty_ind), empty_ind[0]))
+                warn('Skipping %g voxel(s) of processing mask outside mask_img (first index: %g)' % (len(empty_ind), empty_ind[0]))
                 A = A[list(set(range(A.shape[0])) - set(empty_ind)), :]
                 process_mask[tuple(np.asarray(process_mask_coords)[:, empty_ind])] = False
 
