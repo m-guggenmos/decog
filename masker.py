@@ -1,7 +1,7 @@
 from nilearn.input_data.base_masker import BaseMasker
 from nilearn.input_data import NiftiMasker
 from nilearn import _utils
-from nilearn.image import smooth_img
+from nilearn.image import smooth_img, resample_img
 import numpy as np
 from nibabel import Nifti1Image, load
 
@@ -9,7 +9,8 @@ FDICT = dict(mean=(np.mean, dict(axis=1)), max=(np.max, dict(axis=1)))
 
 
 class MultiRoiMasker(BaseMasker):
-    def __init__(self, mask_img=None, rois=None, smoothing_fwhm=None, combine_rois=False, searchlight=False):
+    def __init__(self, mask_img=None, rois=None, smoothing_fwhm=None, resample=None, combine_rois=False,
+                 searchlight=False):
 
         self.mask_img = mask_img
         if not rois:
@@ -18,6 +19,7 @@ class MultiRoiMasker(BaseMasker):
             rois = [rois]
         self.rois = rois
         self.smoothing_fwhm = smoothing_fwhm
+        self.resample = resample
         self.combine_rois = combine_rois
         self.searchlight = searchlight
 
@@ -25,15 +27,21 @@ class MultiRoiMasker(BaseMasker):
 
     def fit(self):
 
+        if self.resample is not None:
+            self.desired_affine = np.diag(self.resample * np.ones(3))
+        else:
+            self.desired_affine = None
+
         if self.searchlight:
             self.mask = load(self.mask_img)
-            masker = SearchlightMasker(smoothing_fwhm=self.smoothing_fwhm)
+            masker = SearchlightMasker(smoothing_fwhm=self.smoothing_fwhm, target_affine=self.desired_affine)
 
         for roi_id, roi in enumerate(self.rois):
             if self.searchlight:
                 self.masker[roi_id] = masker
             else:
-                self.masker[roi_id] = NiftiMasker(mask_img=roi, smoothing_fwhm=self.smoothing_fwhm)
+                self.masker[roi_id] = NiftiMasker(mask_img=resample_img(roi, interpolation='nearest', target_affine=self.desired_affine),
+                                                  smoothing_fwhm=self.smoothing_fwhm)
             self.masker[roi_id].fit()
 
         return self
@@ -45,6 +53,9 @@ class MultiRoiMasker(BaseMasker):
         ----------
         X: list of Niimg-like objects
         """
+
+        if self.resample is not None:
+            X = resample_img(X, target_affine=self.desired_affine)
 
         if self.searchlight:
             affine = self.mask.affine
@@ -114,8 +125,8 @@ class MultiRoiExtractMasker(BaseMasker):
 
 
 from nilearn.input_data.base_masker import BaseMasker
-from nilearn.image import smooth_img
-from nilearn import _utils
+from nilearn.image import smooth_img, resample_img
+from nilearn._utils import check_niimg_3d
 
 class DummyMasker(BaseMasker):
 
@@ -142,19 +153,22 @@ class DummyMasker(BaseMasker):
 
 class SearchlightMasker(BaseMasker):
 
-    def __init__(self, smoothing_fwhm=None):
+    def __init__(self, smoothing_fwhm=None, target_affine=None):
 
         self.smoothing_fwhm = smoothing_fwhm
+        self.target_affine = target_affine
 
     def fit(self):
 
         return self
 
-    def transform(self, X, confounds=None):
-        """
-        Dummy transform function
-        """
-        if self.smoothing_fwhm is not None:
-            return smooth_img(X, self.smoothing_fwhm)
+    def transform(self, imgs, confounds=None):
+        if self.smoothing_fwhm is not None or self.target_affine is not None:
+            if self.smoothing_fwhm is not None:
+                imgs = smooth_img(imgs, self.smoothing_fwhm)
+            if self.target_affine is not None:
+                imgs = resample_img(imgs, target_affine=self.target_affine)
         else:
-            return [_utils.check_niimg_3d(img) for img in X] if isinstance(X, list) else _utils.check_niimg_3d(X)
+            imgs = [check_niimg_3d(img) for img in imgs] if isinstance(imgs, list) else check_niimg_3d(imgs)
+
+        return imgs

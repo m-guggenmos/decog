@@ -12,7 +12,6 @@ from sklearn.feature_selection import SelectPercentile, f_classif, f_regression,
 from sklearn.grid_search import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, r2_score, explained_variance_score, confusion_matrix, classification_report
-from nilearn.input_data import NiftiMasker
 from decereb.feature_selection import \
     MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel
 from mgutils.archiving import zip_directory_structure
@@ -176,7 +175,6 @@ def _link(params):
             raise  # re-raise
     finally:
         link.info['success'] = True
-        link.info['messages'].append("Link ran successfully")
         link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
         link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
         result = {k: v for k, v in link.result.items() if detailed_save or not k.startswith('forest_contrib')}
@@ -280,6 +278,10 @@ class Analysis:
                     y_pred=np.full(self.n_samples, np.nan),
                     grid_scores=[None] * self.n_folds
                 )
+                if self.n_channels > 1 and not self.is_regression:
+                    result_channels[c][s].update(
+                        y_pred_graded=np.full(self.n_samples, np.nan)
+                    )
                 if self.scheme.is_multiroi[c]:
                     result_channels[c][s].update(
                         votes=np.full((len(self.scheme.masker_args[0]['rois']), self.n_samples), np.nan),
@@ -338,8 +340,6 @@ class Analysis:
                         # train_cache = Pipeline(self.pipeline.steps[:-1]).fit_transform(images_train, labels_train)
                         # self.clf.fit(train_cache, labels_train)
 
-
-
                         for step in range(len(self.steps[c])):
                             self.steps[c][step] = self.pipeline[c].best_estimator_.steps[step]
                         if len(self.selection[c]):
@@ -354,6 +354,16 @@ class Analysis:
                     if test_cache[f][c] is None:
                         test_cache[f][c] = Pipeline(self.steps[c][:-1]).transform(images_test)
                     predictions = self.clf[c].predict(test_cache[f][c])
+                    if self.n_channels > 1 and not self.is_regression:
+                        if hasattr(self.clf[c], 'predict_graded'):
+                            predictions_graded = self.clf[c].predict_graded(test_cache[f][c])
+                        else:
+                            predictions_graded = predictions
+                        # if hasattr(self.clf[c], 'predict_proba'):
+                        #     predictions_graded_ = self.clf[c].predict_proba(test_cache[f][c])
+                        #     predictions_graded = predictions_graded_[:, 1] - 0.5
+                        # else:
+                        #     predictions_graded = predictions - np.mean(np.unique(self.scheme.data[c].labels))
                     if self.param_grid[c] is not None:
                         result_channels[c][s]['grid_scores'][f] = \
                             [score.mean_validation_score for score in self.pipeline[c].grid_scores_]
@@ -387,19 +397,16 @@ class Analysis:
                                 np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
 
                     result_channels[c][s]['y_pred'][test_index] = predictions.astype(float)
+                    if self.n_channels > 1 and not self.is_regression:
+                        result_channels[c][s]['y_pred_graded'][test_index] = predictions_graded.astype(float)
                     if hasattr(self.clf[c], 'votes_pooled'):
                         result_channels[c][s]['votes_pooled'][test_index] = self.clf[c].votes_pooled
                     if hasattr(self.clf[c], 'votes'):
                         result_channels[c][s]['votes'][:, test_index] = np.array(self.clf[c].votes)
 
-
             if self.n_channels > 1:
-                vote = np.mean([np.mean([s['y_pred'][test_index] for s in ch], axis=0)
-                                for i, ch in enumerate(result_channels)], axis=0)
-                if self.is_regression:
-                    result_meta['y_pred'][test_index] = vote
-                else:
-                    result_meta['y_pred'][test_index] = np.round(vote)
+                result_meta['y_pred'][test_index] = self.meta_predict(
+                    [np.mean([s[('y_pred_graded', 'y_pred')[self.is_regression]][test_index] for s in ch], axis=0) for i, ch in enumerate(result_channels)])
                 # result_meta[s]['y_pred'][test_index] = \
                 #     self.meta_predict(self.y_true[train_index],
                 #                       [self.clf[ch].predict(train_cache[f][ch]) for ch in range(self.n_channels)],
@@ -458,7 +465,7 @@ class Analysis:
                         for param, av, ste in result[pfx + 'grid_scores']:
                             print('%s: %.5f +- %.5f' % (param, av, ste))
             if self.n_channels > 1:
-                print('************       Meta Results       ************')
+                print('***********       Combined Results       ***********')
                 print("Accuracy: %.5f +- %.5f %s" % (result['accuracy'], result['accuracy_ste'],
                       ['%.5f' % acc for acc in result['accuracy_seed']]))
                 if self.is_regression:
@@ -491,14 +498,19 @@ class Analysis:
 
         return container
 
-    def meta_predict(self, y_true_train, y_pred_train_list, y_pred_test_list):
-        acc = [np.mean(y_true_train == y_pred_train) for y_pred_train in y_pred_train_list]
-        weighted_mean = np.array(y_pred_test_list).swapaxes(0, 1).dot(acc) / np.sum(acc)
+    def meta_predict(self, y_pred_test_list):
+
+        if self.scheme.clf_meta_args['weighting'] is not None:
+            weighting = self.scheme.clf_meta_args['weighting']
+            weighted_mean = np.array(y_pred_test_list).swapaxes(0, 1).dot(weighting) / np.sum(weighting)
+        else:
+            weighted_mean = np.mean(y_pred_test_list, axis=0)
 
         if self.is_regression:
             return weighted_mean
         else:
-            return [np.round(wm) if wm % 0.5 else y_pred_test_list[np.argsort(acc)[-1]][i] for i, wm in enumerate(weighted_mean)]
+            # return np.unique(self.scheme.data[0].labels)[((1 + np.sign(weighted_mean)) / 2).astype(int)]
+            return np.round(weighted_mean)
 
     def construct_pipe(self, n_jobs, seed, verbose):
 
@@ -607,7 +619,7 @@ class Analysis:
                 self.scheme.pipeline[c].clf.clf_args.update(class_weight='balanced')
             if self.scheme.is_multiroi[c]:
                 be_dict = {'base_estimator': self.scheme.pipeline[c].clf.clf(**self.scheme.pipeline[c].clf.clf_args)}
-                self.clf[c] = self.scheme.clf_multiroi(**{**be_dict, **self.scheme.clf_multiroi_args})
+                self.clf[c] = self.scheme.clf_multiroi[c](**{**be_dict, **self.scheme.clf_multiroi_args[c]})
                 if np.any([isinstance(v, list) for v in self.scheme.pipeline[c].clf.clf_args.values()]):
                     for k, v in self.scheme.pipeline[c].clf.clf_args.items():
                         if isinstance(v, list):

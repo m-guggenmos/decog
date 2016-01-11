@@ -8,11 +8,14 @@ from sklearn.svm import LinearSVC
 from inspect import signature
 from scipy.stats import mode
 from sklearn.base import clone
+from warnings import warn
+from sklearn.cross_validation import LeaveOneOut
+
 
 class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
 
     def __init__(self, verbose=0, n_jobs=1, random_state=None, base_estimator=LinearSVC(), base_estimator_args=None,
-                 continuous=False):
+                 vote_graded=False):
 
         if base_estimator_args is None:
             base_estimator_args = dict()
@@ -22,12 +25,12 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
         self.random_state = random_state
         self.set_random_state()
         #
-        super(RoiEnsemble, self).__init__(self.base_estimator, estimator_params=tuple(base_estimator_args.keys()))
+        super().__init__(self.base_estimator, estimator_params=tuple(base_estimator_args.keys()))
 
         # for k, v in base_estimator_args.items():
         #     self.__setattr__(k, v)
 
-        self.continuous = continuous
+        self.vote_graded = vote_graded
 
         self.n_jobs = n_jobs
         self.verbose = verbose
@@ -64,6 +67,35 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
                 estimator.set_params(process_mask_img=x[1])
             estimators[roi_id] = estimator
 
+        if self.vote_graded:
+            y_pred = {k: np.full(len(y), np.nan) for k in X.keys()}
+            for f, (train_index, test_index) in enumerate(LeaveOneOut(len(y))):
+                y_train = [y[i] for i in train_index]
+
+                if self.base_estimator._estimator_type == 'searchlight_ensemble':
+                    estimators_fit = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
+                                     delayed(_parallel_build_estimator)(e, [X[roi_id][0][i] for i in train_index], y_train) for roi_id, e in estimators.items())
+                    estimators_fit = {e.roi_id: e for e in estimators_fit}
+                    y_pred_ = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
+                             delayed(_vote)(e, [X[roi_id][0][i] for i in test_index], False) for roi_id, e in estimators_fit.items())
+                else:
+                    estimators_fit = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
+                                     delayed(_parallel_build_estimator)(e, [X[roi_id][i] for i in train_index], y_train) for roi_id, e in estimators.items())
+                    estimators_fit = {e.roi_id: e for e in estimators_fit}
+                    y_pred_ = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
+                             delayed(_vote)(e, [X[roi_id][i] for i in test_index], False) for roi_id, e in estimators_fit.items())
+                for i, roi_id in enumerate(X.keys()):
+                    y_pred[roi_id][test_index] = y_pred_[i]
+
+            self.vote_weighting = [np.mean(v == np.array(y)) for v in y_pred.values()]
+            if not np.any(self.vote_weighting):
+                self.vote_weighting = 1e-10 * np.ones(len(self.vote_weighting))
+        else:
+            self.vote_weighting = np.ones(len(X.keys())) / len(X.keys())
+
+
+
+
         if self.base_estimator._estimator_type == 'searchlight_ensemble':
             estimators = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
                          delayed(_parallel_build_estimator)(e, X[roi_id][0], y) for roi_id, e in estimators.items())
@@ -75,7 +107,7 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
 
         return self
 
-    def predict(self, X):
+    def predict_(self, X, probability=False):
         """Predict class for X.
 
         The predicted class of an input sample is a vote by the individual searchlights.
@@ -102,46 +134,55 @@ class RoiEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
 
         if self.base_estimator._estimator_type == 'searchlight_ensemble':
             self.votes = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
-                         delayed(_vote)(e, X[roi_id][0], self.continuous) for roi_id, e in self.estimators_.items())
+                         delayed(_vote)(e, X[roi_id][0], probability) for roi_id, e in self.estimators_.items())
         else:
             self.votes = Parallel(n_jobs=self.n_jobs, verbose=self.verbose, backend="threading")(
-                         delayed(_vote)(e, X[roi_id], self.continuous) for roi_id, e in self.estimators_.items())
+                         delayed(_vote)(e, X[roi_id], probability) for roi_id, e in self.estimators_.items())
 
-        if self.base_estimator._estimator_type == 'classifier':
-            if self.continuous:
-                if len(X) == 1:
-                    vote = np.sign(self.votes[0]) / 2. + 0.5
-                    self.votes_pooled = vote
-                else:
-                    self.votes_pooled = np.mean(self.votes, axis=0)
-                    vote = np.sign(self.votes_pooled) / 2. + 0.5
-                self.predictions = self.classes_[vote.astype(int)]
-            else:
-                self.predictions = mode(self.votes)[0][0]
-        else:
-            self.votes_pooled = np.mean(self.votes, axis=0)
+        self.votes_pooled = np.array(self.votes).swapaxes(0, 1).dot(self.vote_weighting) / sum(self.vote_weighting)
+
+    def predict(self, X):
+
+        self.predict_(X, False)
+
+        if self.base_estimator._estimator_type == 'regressor':
             self.predictions = self.votes_pooled
-
+        else:
+            # self.predictions = self.classes_[(np.sign(self.votes_pooled) / 2. + 0.5).astype(int)]
+            self.predictions = np.round(self.votes_pooled)
 
         return self.predictions
 
-    # def set_params(self, **params):
-    #     super().set_params(**params)
-    #     if 'random_state' in params:
-    #         self.set_random_state(params['random_state'])
+    def predict_graded(self, X):
+
+        self.predict_(X)
+        self.predictions = self.votes_pooled
+
+        return self.predictions
+
+    def predict_proba(self, X):
+
+        self.predict_(X, probability=True)
+
+        proba = 0.5 * np.ones((len(self.votes_pooled), 2))
+        proba = proba + np.vstack((-self.votes_pooled, self.votes_pooled)).swapaxes(0, 1)
+
+        return proba
 
 
-def _vote(estimator, X, continuous):
+
+def _vote(estimator, X, probability):
     """Private function used to compute a single vote in parallel."""
 
-    if continuous:
-        # vote = estimator.predict(X)
-        if hasattr(estimator, 'decision_function'):
-            vote = estimator.decision_function(X)
-        elif hasattr(estimator, 'predict_proba'):
-            vote = [-v[np.argmax(v)] * ((-1)**np.argmax(v)) for v in estimator.predict_proba(X)]
+    if probability:
+        if hasattr(estimator, 'predict_proba'):
+            # vote = [-v[np.argmax(v)] * ((-1)**np.argmax(v)) for v in estimator.predict_proba(X)]
+            vote = estimator.predict_proba(X)[:, 1] - 0.5
+        # elif hasattr(estimator, 'decision_function'):
+        #     vote = estimator.decision_function(X)
         else:
-            AttributeError('Estimator must either implement decision_function or predict_proba if continuous=True.')
+            warn('Estimator must implement predict_proba if probability=True. Using predict() instead.')
+            vote = estimator.predict(X)
     else:
         vote = estimator.predict(X)
 
