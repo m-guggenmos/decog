@@ -5,6 +5,8 @@ from sklearn.ensemble.base import BaseEnsemble
 from sklearn.externals import six
 from sklearn.externals.joblib import Parallel, delayed
 from sklearn.svm import LinearSVC
+from inspect import signature
+from scipy.stats import mode
 from sklearn.base import clone
 from warnings import warn
 from sklearn.cross_validation import LeaveOneOut
