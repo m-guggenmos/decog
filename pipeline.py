@@ -383,13 +383,14 @@ class Analysis:
                             features = dict()
                             for sel in self.selection[c]:
                                 for k, v in sel.get_support().items():
-                                    if k not in features:
-                                        features[k] = v
-                                    else:
-                                        features[k][features[k]] = v
+                                    if k in test_cache[f][c].keys():
+                                        if k not in features:
+                                            features[k] = v
+                                        else:
+                                            features[k][features[k]] = v
                         else:
                             features = {k: np.ones(len(v[0]), dtype=bool) for k, v in test_cache[f][c].items()}
-                        for k in features.keys():
+                        for k in test_cache[f][c].keys():
                             if k not in result_channels[c][s]['feature_importance']:
                                 result_channels[c][s]['feature_importance'][k] = np.full((self.n_folds, len(features[k])), np.nan)
                             contrib = ti.predict(self.clf[c].estimators_[k], test_cache[f][c][k])[2]
@@ -402,7 +403,8 @@ class Analysis:
                     if hasattr(self.clf[c], 'votes_pooled'):
                         result_channels[c][s]['votes_pooled'][test_index] = self.clf[c].votes_pooled
                     if hasattr(self.clf[c], 'votes'):
-                        result_channels[c][s]['votes'][:, test_index] = np.array(self.clf[c].votes)
+                        for i, k in enumerate(self.clf[c].estimators_.keys()):
+                            result_channels[c][s]['votes'][k, test_index] = np.array(self.clf[c].votes)[i, :]
 
             if self.n_channels > 1:
                 result_meta['y_pred'][test_index] = self.meta_predict(
@@ -418,7 +420,7 @@ class Analysis:
             result = self.assess_performance(pfx, result_channels[c], container=result)
 
             if hasattr(self.clf[c], 'votes'):
-                result[pfx + 'votes'] = np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0).tolist()
+                result[pfx + 'votes'] = np.nanmean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0).tolist()
             if hasattr(self.clf[c], 'votes_pooled'):
                 result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0).tolist()
 
