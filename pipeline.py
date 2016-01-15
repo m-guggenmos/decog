@@ -1,23 +1,25 @@
+import json
 import os
 import time
-from warnings import warn
-from inspect import signature
+import warnings
 from collections import OrderedDict
-from dataset import connect
-import json
+from inspect import signature
+from warnings import warn
+
 import multiprocessing_on_dill as multiprocessing
 import numpy as np
+from dataset import connect
 from sklearn.cross_validation import StratifiedKFold, KFold
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.feature_selection import SelectPercentile, f_classif, f_regression, VarianceThreshold, SelectFromModel
 from sklearn.grid_search import GridSearchCV
-from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, r2_score, explained_variance_score, confusion_matrix, classification_report
+from sklearn.pipeline import Pipeline
+from treeinterpreter import treeinterpreter as ti
+
 from decereb.feature_selection import \
     MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel
-from mgutils.archiving import zip_directory_structure
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from treeinterpreter import treeinterpreter as ti
-import warnings
+from .util.archiving import zip_directory_structure
 
 
 class Link:
