@@ -21,7 +21,6 @@ from decereb.feature_selection import \
     MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel
 from .util.archiving import zip_directory_structure
 
-
 class Link:
 
     def __init__(self, scheme=None):
@@ -264,10 +263,14 @@ class Analysis:
         self.n_seeds = [len(sl) for sl in seed_lists]
         self.n_samples = len(self.scheme.data[0].labels)
 
-        if self.is_regression:
-            cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+
+        if self.scheme.cv is None:
+            if self.is_regression:
+                cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+            else:
+                cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
         else:
-            cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+            cv_outer = self.scheme.cv
         # cv_outer = LeaveOneOut(len(self.y))
 
         self.n_folds = len(cv_outer)
@@ -381,7 +384,7 @@ class Analysis:
                     elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
                         if 'feature_importance' not in result_channels[c][s]:
                             result_channels[c][s]['feature_importance'] = dict()
-                        if self.selection:
+                        if sum(self.selection, []):
                             features = dict()
                             for sel in self.selection[c]:
                                 for k, v in sel.get_support().items():
