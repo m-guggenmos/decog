@@ -58,7 +58,7 @@ class Chain:
     def __init__(self, linkdef_list):
         self.linkdef_list = linkdef_list
 
-    def run(self, test_mode=False, n_jobs=1, verbose=2, seed=None, output_path=None, recompute=False,
+    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=2, seed=None, output_path=None, recompute=False,
             skip_runerror=True, skip_ioerror=False, zip_code_dirs=None, detailed_save=False):
         """
 
@@ -66,7 +66,8 @@ class Chain:
             zip_code_dirs:
             detailed_save:
             test_mode (bool): run in test-mode (enhanced debugging)
-            n_jobs (int): number of jobs for multiprocessing
+            n_jobs_links (int): number of parallell jobs for links
+            n_jobs_folds (int): number of parallell jobs for folds
             verbose (int): verbosity level
             seed (None, int): seed for random number generator
             output_path: directoy in which analyses are saved as pickle files
@@ -76,6 +77,9 @@ class Chain:
         """
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
+
+        if n_jobs_links > 1 and n_jobs_folds > 1:
+            raise Exception('You cannot set both n_jobs_chain and n_jobs_folds > 1.')
 
         if output_path is None:
             db_string = 'sqlite:///:memory:'
@@ -109,16 +113,16 @@ class Chain:
         #     n_jobs, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror, skip_ioerror, db_string, lockfile)
         #                                                      for link_id, linkdef in enumerate(self.linkdef_list))
 
-        if test_mode:
+        if n_jobs_links == 1:
             chain = []
             for link_id, linkdef in enumerate(self.linkdef_list):
-                link = _link((n_jobs, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
+                link = _link((n_jobs_folds, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
                               skip_ioerror, db_string, lockfile, detailed_save))
                 chain.append(link)
 
         else:
-            pool = multiprocessing.Pool(None if n_jobs == -1 else n_jobs)
-            chain = pool.map(_link, [(n_jobs, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
+            pool = multiprocessing.Pool(None if n_jobs_links == -1 else n_jobs_links)
+            chain = pool.map(_link, [(n_jobs_folds, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
                                       skip_ioerror, db_string, lockfile, detailed_save)
                                      for link_id, linkdef in enumerate(self.linkdef_list)])
             pool.close()
@@ -149,7 +153,7 @@ def _link(params):
         lockfile (str): path of lock file
     """
 
-    n_jobs, verbose, seed, link_id, chain_len, link, skip_runerror, skip_ioerror, db_string, lockfile, detailed_save = params
+    n_jobs_folds, verbose, seed, link_id, chain_len, link, skip_runerror, skip_ioerror, db_string, lockfile, detailed_save = params
 
     link_string = "Running chain link %g / %g %s\n%s" % (link_id + 1, chain_len, db_string, link.db_key_str)
     link_string_short = "[%g/%g] %s" % (link_id + 1, chain_len, link.db_key_str)
@@ -164,7 +168,7 @@ def _link(params):
 
     link.info['messages'] = []
     try:
-        link.result = link.analysis.run(n_jobs=n_jobs, verbose=verbose, seed=seed)
+        link.result = link.analysis.run(n_jobs_folds=n_jobs_folds, verbose=verbose, seed=seed)
     except Exception as ex:
         link.info['success'] = False
         link.result = False
@@ -244,9 +248,9 @@ class Analysis:
         self.steps = None
         self.param_grid = None
 
-    def run(self, n_jobs=1, verbose=2, seed=None):
+    def run(self, n_jobs_folds=1, verbose=2, seed=None):
 
-        self.construct_pipe(n_jobs=n_jobs, seed=seed, verbose=verbose)
+        self.construct_pipe(seed=seed, verbose=verbose)
 
         for i, data in enumerate(self.scheme.data):
             assert np.array_equal(data.labels, self.scheme.data[0].labels), "Labels of all channels must be identical"
@@ -263,8 +267,7 @@ class Analysis:
         self.n_seeds = [len(sl) for sl in seed_lists]
         self.n_samples = len(self.scheme.data[0].labels)
 
-
-        if self.scheme.cv is None:
+        if not hasattr(self.scheme, 'cv') or self.scheme.cv is None:
             if self.is_regression:
                 cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
             else:
@@ -274,7 +277,6 @@ class Analysis:
         # cv_outer = LeaveOneOut(len(self.y))
 
         self.n_folds = len(cv_outer)
-
 
         result_channels = [[None] * self.n_seeds[c] for c in range(self.n_channels)]
         for c in range(self.n_channels):
@@ -292,132 +294,42 @@ class Analysis:
                         votes=np.full((len(self.scheme.masker_args[0]['rois']), self.n_samples), np.nan),
                         votes_pooled=np.full(self.n_samples, np.nan),
                     )
-        train_cache = None
-        test_cache = None
-
-
-        if train_cache is None:
-            train_cache = [None] * self.n_folds
-        if test_cache is None:
-            test_cache = [None] * self.n_folds
-
-
-
         if self.n_channels > 1:
             result_meta = dict(
                 y_pred=np.full(self.n_samples, np.nan)
             )
 
+        if n_jobs_folds == 1:
+            results = []
+            for f, (train_index, test_index) in enumerate(cv_outer):
+                results.append(self._fold((f, train_index, test_index, seed_lists, verbose)))
+        else:
+            pool = multiprocessing.Pool(None if n_jobs_folds == -1 else n_jobs_folds)
+            results = pool.map(self._fold, [(f, train_index, test_index, seed_lists, verbose)
+                                            for f, (train_index, test_index) in enumerate(cv_outer)])
+            pool.close()
+
         for f, (train_index, test_index) in enumerate(cv_outer):
-
-            if train_cache[f] is None:
-                train_cache[f] = [None] * self.n_channels
-            if test_cache[f] is None:
-                test_cache[f] = [None] * self.n_channels
-
+            result_channels_fold, result_meta_fold = results[f]
+            if self.n_channels > 1:
+                result_meta['y_pred'][test_index] = result_meta_fold['y_pred']
             for c in range(self.n_channels):
-
-                X = self.scheme.data[c].data
-
-                for s, seed_ in enumerate(seed_lists[c]):
-
-                    if verbose > 1:
-                        print('[%s] Fold %g / %g Channel %g / %g Seed %g / %g' %
-                              (time.strftime("%d.%m %H:%M:%S"), f + 1, self.n_folds, c + 1, self.n_channels, s + 1, self.n_seeds[c]))
-                        if self.name:
-                            print('\tof << %s >>' % self.name)
-                    images_train = [X[i] for i in train_index]
-                    labels_train = [self.y_true[i] for i in train_index]
-                    images_test = [X[i] for i in test_index]
-
-                    # (1 / 2) If no GridSearchCV is used, we can prefit the preprocessing steps
-                    if self.param_grid[c] is None and train_cache[f][c] is None:
-                        train_cache[f][c] = Pipeline(self.steps[c][:-1]).fit_transform(images_train, labels_train)
-
-                    if hasattr(self.clf[c], 'random_state'):
-                        self.clf[c].random_state = seed_
-                    if 'fs_nested' in self.steps and hasattr(self.steps[c]['fs_nested'].estimator, 'random_state'):
-                        self.steps['fs_nested'].estimator.random_state = seed_
-                    if self.param_grid[c] is None:
-                        self.clf[c].fit(train_cache[f][c], labels_train)
-                    else:  # (2 /2) else we have to fit the entire pipeline for each seed
-                        self.pipeline[c].fit(images_train, labels_train)
-                        # train_cache = Pipeline(self.pipeline.steps[:-1]).fit_transform(images_train, labels_train)
-                        # self.clf.fit(train_cache, labels_train)
-
-                        for step in range(len(self.steps[c])):
-                            self.steps[c][step] = self.pipeline[c].best_estimator_.steps[step]
-                        if len(self.selection[c]):
-                            step_classes = [step[1].__class__ for step in self.pipeline[c].best_estimator_.steps]
-                            for i, sel in enumerate(self.selection[c]):
-                                self.selection[c][i] = self.pipeline[c].best_estimator_.steps[step_classes.index(sel.__class__)][1]
-                        self.clf[c] = self.pipeline[c].best_estimator_._final_estimator
-                        # self.pipeline[c] = self.pipeline[c].best_estimator_
-
-                        train_cache[f][c] = Pipeline(self.steps[c][:-1]).transform(images_train)
-
-                    if test_cache[f][c] is None:
-                        test_cache[f][c] = Pipeline(self.steps[c][:-1]).transform(images_test)
-                    predictions = self.clf[c].predict(test_cache[f][c])
-                    if self.n_channels > 1 and not self.is_regression:
-                        if hasattr(self.clf[c], 'predict_graded'):
-                            predictions_graded = self.clf[c].predict_graded(test_cache[f][c])
-                        else:
-                            predictions_graded = predictions
-                        # if hasattr(self.clf[c], 'predict_proba'):
-                        #     predictions_graded_ = self.clf[c].predict_proba(test_cache[f][c])
-                        #     predictions_graded = predictions_graded_[:, 1] - 0.5
-                        # else:
-                        #     predictions_graded = predictions - np.mean(np.unique(self.scheme.data[c].labels))
+                for s in range(self.n_seeds[c]):
+                    result_channels[c][s]['y_pred'][test_index] = result_channels_fold[c][s]['y_pred']
                     if self.param_grid[c] is not None:
-                        result_channels[c][s]['grid_scores'][f] = \
-                            [score.mean_validation_score for score in self.pipeline[c].grid_scores_]
-                    if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(X, np.ndarray):
-                        features = np.ones(X.shape[1], dtype=bool)
+                        result_channels[c][s]['grid_scores'][f] = result_channels_fold[c][s]['grid_scores']
+                    if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
                         if 'feature_importance' not in result_channels[c][s]:
-                            result_channels[c][s]['feature_importance'] = np.full((self.n_folds, X.shape[1]), np.nan)
-                        for sel in self.selection[c]:
-                            features[features] = sel.get_support()
-                        contrib = ti.predict(self.clf[c], np.array(test_cache[f][c]))[2]
-                        result_channels[c][s]['feature_importance'][f, features] = \
-                            np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
+                            result_channels[c][s]['feature_importance'] = np.full((self.n_folds, len(result_channels_fold[c][s]['feature_importance'])), np.nan)
+                        result_channels[c][s]['feature_importance'][f, :] = result_channels_fold[c][s]['feature_importance']
                     elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
                         if 'feature_importance' not in result_channels[c][s]:
                             result_channels[c][s]['feature_importance'] = dict()
-                        if sum(self.selection, []):
-                            features = dict()
-                            for sel in self.selection[c]:
-                                for k, v in sel.get_support().items():
-                                    if k in test_cache[f][c].keys():
-                                        if k not in features:
-                                            features[k] = v
-                                        else:
-                                            features[k][features[k]] = v
-                        else:
-                            features = {k: np.ones(len(v[0]), dtype=bool) for k, v in test_cache[f][c].items()}
-                        for k in test_cache[f][c].keys():
+                        for k in result_channels[0][c]['feature_importance'].keys():
                             if k not in result_channels[c][s]['feature_importance']:
-                                result_channels[c][s]['feature_importance'][k] = np.full((self.n_folds, len(features[k])), np.nan)
-                            contrib = ti.predict(self.clf[c].estimators_[k], test_cache[f][c][k])[2]
-                            result_channels[c][s]['feature_importance'][k][f, features[k]] = \
-                                np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
+                                result_channels[c][s]['feature_importance'][k] = np.full((self.n_folds, len(result_channels_fold[c][s]['feature_importance'][k])), np.nan)
+                            result_channels[c][s]['feature_importance'][k][f, :] = result_channels_fold[c][s]['feature_importance'][k]
 
-                    result_channels[c][s]['y_pred'][test_index] = predictions.astype(float)
-                    if self.n_channels > 1 and not self.is_regression:
-                        result_channels[c][s]['y_pred_graded'][test_index] = predictions_graded.astype(float)
-                    if hasattr(self.clf[c], 'votes_pooled'):
-                        result_channels[c][s]['votes_pooled'][test_index] = self.clf[c].votes_pooled
-                    if hasattr(self.clf[c], 'votes'):
-                        for i, k in enumerate(self.clf[c].estimators_.keys()):
-                            result_channels[c][s]['votes'][k, test_index] = np.array(self.clf[c].votes)[i, :]
-
-            if self.n_channels > 1:
-                result_meta['y_pred'][test_index] = self.meta_predict(
-                    [np.mean([s[('y_pred_graded', 'y_pred')[self.is_regression]][test_index] for s in ch], axis=0) for i, ch in enumerate(result_channels)])
-                # result_meta[s]['y_pred'][test_index] = \
-                #     self.meta_predict(self.y_true[train_index],
-                #                       [self.clf[ch].predict(train_cache[f][ch]) for ch in range(self.n_channels)],
-                #                       [channel[s]['y_pred'][test_index] for channel in result_channels])
 
         result = dict()
         for c in range(self.n_channels):
@@ -429,7 +341,7 @@ class Analysis:
             if hasattr(self.clf[c], 'votes_pooled'):
                 result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0).tolist()
 
-            if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(X, np.ndarray):
+            if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
                 with warnings.catch_warnings():  # catch stupid behavior of nanmean
                     warnings.simplefilter("ignore", RuntimeWarning)
                     result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
@@ -438,7 +350,7 @@ class Analysis:
                 with warnings.catch_warnings():  # catch stupid behavior of nanmean
                     warnings.simplefilter("ignore", RuntimeWarning)
                     for k in result_channels[0][c]['feature_importance'].keys():
-                        result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds[c])], axis=(0,1)).tolist()
+                        result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
 
             if self.param_grid[c] is not None:
                 grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
@@ -485,6 +397,131 @@ class Analysis:
 
         return result
 
+    def _fold(self, params):
+        f, train_index, test_index, seed_lists, verbose = params
+
+        train_cache = [None] * self.n_channels
+        test_cache = [None] * self.n_channels
+
+        n_test = len(test_index)
+
+        result_channels = [[None] * self.n_seeds[c] for c in range(self.n_channels)]
+        for c in range(self.n_channels):
+            for s in range(self.n_seeds[c]):
+                result_channels[c][s] = dict()
+                if self.scheme.is_multiroi[c]:
+                    result_channels[c][s].update(
+                        votes=np.full((len(self.scheme.masker_args[0]['rois']), n_test), np.nan),
+                    )
+
+        result_meta = dict()
+
+        for c in range(self.n_channels):
+
+            X = self.scheme.data[c].data
+
+            for s, seed_ in enumerate(seed_lists[c]):
+
+                if verbose > 1:
+                    print('[%s] Fold %g / %g Channel %g / %g Seed %g / %g' %
+                          (time.strftime("%d.%m %H:%M:%S"), f + 1, self.n_folds, c + 1, self.n_channels, s + 1, self.n_seeds[c]))
+                    if self.name:
+                        print('\tof << %s >>' % self.name)
+                images_train = [X[i] for i in train_index]
+                labels_train = [self.y_true[i] for i in train_index]
+                images_test = [X[i] for i in test_index]
+
+                # (1 / 2) If no GridSearchCV is used, we can prefit the preprocessing steps
+                if self.param_grid[c] is None and train_cache[c] is None:
+                    train_cache[c] = Pipeline(self.steps[c][:-1]).fit_transform(images_train, labels_train)
+
+                if hasattr(self.clf[c], 'random_state'):
+                    self.clf[c].random_state = seed_
+                if 'fs_nested' in self.steps and hasattr(self.steps[c]['fs_nested'].estimator, 'random_state'):
+                    self.steps['fs_nested'].estimator.random_state = seed_
+                if self.param_grid[c] is None:
+                    self.clf[c].fit(train_cache[c], labels_train)
+                else:  # (2 /2) else we have to fit the entire pipeline for each seed
+                    self.pipeline[c].fit(images_train, labels_train)
+                    # train_cache = Pipeline(self.pipeline.steps[:-1]).fit_transform(images_train, labels_train)
+                    # self.clf.fit(train_cache, labels_train)
+
+                    for step in range(len(self.steps[c])):
+                        self.steps[c][step] = self.pipeline[c].best_estimator_.steps[step]
+                    if len(self.selection[c]):
+                        step_classes = [step[1].__class__ for step in self.pipeline[c].best_estimator_.steps]
+                        for i, sel in enumerate(self.selection[c]):
+                            self.selection[c][i] = self.pipeline[c].best_estimator_.steps[step_classes.index(sel.__class__)][1]
+                    self.clf[c] = self.pipeline[c].best_estimator_._final_estimator
+                    # self.pipeline[c] = self.pipeline[c].best_estimator_
+
+                    train_cache[c] = Pipeline(self.steps[c][:-1]).transform(images_train)
+
+                if test_cache[c] is None:
+                    test_cache[c] = Pipeline(self.steps[c][:-1]).transform(images_test)
+                predictions = self.clf[c].predict(test_cache[c])
+                if self.n_channels > 1 and not self.is_regression:
+                    if hasattr(self.clf[c], 'predict_graded'):
+                        predictions_graded = self.clf[c].predict_graded(test_cache[c])
+                    else:
+                        predictions_graded = predictions
+                    # if hasattr(self.clf[c], 'predict_proba'):
+                    #     predictions_graded_ = self.clf[c].predict_proba(test_cache[f][c])
+                    #     predictions_graded = predictions_graded_[:, 1] - 0.5
+                    # else:
+                    #     predictions_graded = predictions - np.mean(np.unique(self.scheme.data[c].labels))
+                if self.param_grid[c] is not None:
+                    result_channels[c][s]['grid_scores'] = \
+                        [score.mean_validation_score for score in self.pipeline[c].grid_scores_]
+                if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(X, np.ndarray):
+                    features = np.ones(X.shape[1], dtype=bool)
+                    if 'feature_importance' not in result_channels[c][s]:
+                        result_channels[c][s]['feature_importance'] = np.full(X.shape[1], np.nan)
+                    for sel in self.selection[c]:
+                        features[features] = sel.get_support()
+                    contrib = ti.predict(self.clf[c], np.array(test_cache[c]))[2]
+                    result_channels[c][s]['feature_importance'][features] = \
+                        np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
+                elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
+                    if 'feature_importance' not in result_channels[c][s]:
+                        result_channels[c][s]['feature_importance'] = dict()
+                    if sum(self.selection, []):
+                        features = dict()
+                        for sel in self.selection[c]:
+                            for k, v in sel.get_support().items():
+                                if k in test_cache[c].keys():
+                                    if k not in features:
+                                        features[k] = v
+                                    else:
+                                        features[k][features[k]] = v
+                    else:
+                        features = {k: np.ones(len(v[0]), dtype=bool) for k, v in test_cache[c].items()}
+                    for k in test_cache[c].keys():
+                        if k not in result_channels[c][s]['feature_importance']:
+                            result_channels[c][s]['feature_importance'][k] = np.full(len(features[k]), np.nan)
+                        contrib = ti.predict(self.clf[c].estimators_[k], test_cache[c][k])[2]
+                        result_channels[c][s]['feature_importance'][k][features[k]] = \
+                            np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
+
+                result_channels[c][s]['y_pred'] = predictions.astype(float)
+                if self.n_channels > 1 and not self.is_regression:
+                    result_channels[c][s]['y_pred_graded'] = predictions_graded.astype(float)
+                if hasattr(self.clf[c], 'votes_pooled'):
+                    result_channels[c][s]['votes_pooled'] = self.clf[c].votes_pooled
+                if hasattr(self.clf[c], 'votes'):
+                    for i, k in enumerate(self.clf[c].estimators_.keys()):
+                        result_channels[c][s]['votes'][k] = np.array(self.clf[c].votes)[i, :]
+
+        if self.n_channels > 1:
+            result_meta['y_pred'] = self.meta_predict(
+                [np.mean([s[('y_pred_graded', 'y_pred')[self.is_regression]][test_index] for s in ch], axis=0) for i, ch in enumerate(result_channels)])
+            # result_meta[s]['y_pred'][test_index] = \
+            #     self.meta_predict(self.y_true[train_index],
+            #                       [self.clf[ch].predict(train_cache[f][ch]) for ch in range(self.n_channels)],
+            #                       [channel[s]['y_pred'][test_index] for channel in result_channels])
+
+        return (result_channels, result_meta)
+
     def assess_performance(self, pfx, result, container=None):
         n_seeds = len(result)
         if container is None:
@@ -519,7 +556,7 @@ class Analysis:
             # return np.unique(self.scheme.data[0].labels)[((1 + np.sign(weighted_mean)) / 2).astype(int)]
             return np.round(weighted_mean)
 
-    def construct_pipe(self, n_jobs, seed, verbose):
+    def construct_pipe(self, seed, verbose):
 
         self.masker, self.clf, self.param_grid, self.steps, self.pipeline = [None] * self.n_channels, \
                   [None] * self.n_channels, [None] * self.n_channels, [None] * self.n_channels, [None] * self.n_channels
@@ -651,5 +688,5 @@ class Analysis:
             self.pipeline[c] = Pipeline(pipes)
             self.steps[c] = self.pipeline[c].steps
             if self.param_grid[c] is not None:
-                self.pipeline[c] = GridSearchCV(self.pipeline[c], param_grid=self.param_grid[c], n_jobs=n_jobs, verbose=verbose-3,
+                self.pipeline[c] = GridSearchCV(self.pipeline[c], param_grid=self.param_grid[c], verbose=verbose-3,
                                              refit=True, cv=3, scoring='accuracy')

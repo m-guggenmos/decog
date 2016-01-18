@@ -76,7 +76,16 @@ class MultiRoiMasker(BaseMasker):
             if self.searchlight:
                 return {k: (masker.transform(X), self.rois[k]) for k, masker in self.masker.items()}
             else:
+                # print(X)
+                # if not not isinstance(X, list) or not isinstance(X[0], list):
                 return {k: masker.transform(X) for k, masker in self.masker.items()}
+                # else:
+                #     from copy import deepcopy
+                #     X2 = [deepcopy(X), deepcopy(X), deepcopy(X)]
+                #     data = dict()
+                #     for i, x in enumerate(X2):
+                #         data.update({i * len(self.masker) + k: masker.transform(x) for k, masker in self.masker.items()})
+                #     return data
 
 
 
