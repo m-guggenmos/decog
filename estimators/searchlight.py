@@ -3,6 +3,7 @@ from sklearn.base import BaseEstimator
 from sklearn import neighbors
 from nilearn.decoding.searchlight import search_light
 from nilearn import masking
+import nibabel
 import numpy as np
 from nilearn.input_data import NiftiMasker
 from warnings import warn
@@ -75,21 +76,22 @@ class SearchLight(BaseEstimator):
         self.process_mask_img = process_mask_img
         self.radius = radius
         self.estimator = estimator
-        self.estimator_params = estimator_params
+        if estimator_params is None:
+            self.estimator_params = dict()
+        else:
+            self.estimator_params = estimator_params
         self.n_jobs = n_jobs
         self.scoring = scoring
         self.cv = cv
         self.verbose = verbose
+        self.affine = None
 
     def fit(self, imgs, y):
         """Fit the searchlight
 
         Parameters
         ----------
-        imgs : Niimg-like object
-            See http://nilearn.github.io/building_blocks/manipulating_mr_images.html#niimg.
-            4D image.
-
+        imgs : List of images
         y : 1D array-like
             Target variable to predict. Must have exactly as many elements as
             3D images in img.
@@ -102,6 +104,7 @@ class SearchLight(BaseEstimator):
         """
 
         # Compute world coordinates of all in-mask voxels.
+        self.affine = nibabel.load(imgs[0]).affine
         mask, mask_affine = masking._load_mask_img(self.mask_img)
         mask_coords = np.where(mask != 0)
         mask_coords = np.asarray(mask_coords + (np.ones(len(mask_coords[0]),
@@ -127,7 +130,7 @@ class SearchLight(BaseEstimator):
         if self.process_mask_img is not None:
             empty_ind = [i for i in range(A.shape[0]) if A[i,:].getnnz() == 0]
             if empty_ind:
-                warn('Skipping %g voxel(s) of processing mask outside mask_img (first index: %g)' % (len(empty_ind), empty_ind[0]))
+                warn('Skipping %g voxels of processing mask outside mask_img (first index: %g)' % (len(empty_ind), empty_ind[0]))
                 A = A[list(set(range(A.shape[0])) - set(empty_ind)), :]
                 process_mask[tuple(np.asarray(process_mask_coords)[:, empty_ind])] = False
 
@@ -153,3 +156,7 @@ class SearchLight(BaseEstimator):
         scores_3D[process_mask] = scores
         self.scores_ = scores_3D
         return self
+
+    def predict(self, X):
+
+        return nibabel.Nifti1Image(self.scores_, affine=self.affine)

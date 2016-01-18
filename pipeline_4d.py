@@ -15,12 +15,12 @@ from sklearn.feature_selection import SelectPercentile, f_classif, f_regression,
 from sklearn.grid_search import GridSearchCV
 from sklearn.metrics import accuracy_score, r2_score, explained_variance_score, confusion_matrix, classification_report
 from sklearn.pipeline import Pipeline
+import nilearn
+from nilearn._utils import check_niimg_4d
 from treeinterpreter import treeinterpreter as ti
-import nibabel
 
 from decereb.feature_selection import \
     MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel
-from decereb.util.cv import DummyCV
 from .util.archiving import zip_directory_structure
 
 class Link:
@@ -119,13 +119,13 @@ class Chain:
             chain = []
             for link_id, linkdef in enumerate(self.linkdef_list):
                 link = _link((n_jobs_folds, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
-                              skip_ioerror, db_string, lockfile, output_dir, timestamp, detailed_save))
+                              skip_ioerror, db_string, lockfile, detailed_save))
                 chain.append(link)
 
         else:
             pool = multiprocessing.Pool(None if n_jobs_links == -1 else n_jobs_links)
             chain = pool.map(_link, [(n_jobs_folds, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
-                                      skip_ioerror, db_string, lockfile, output_dir, timestamp, detailed_save)
+                                      skip_ioerror, db_string, lockfile, detailed_save)
                                      for link_id, linkdef in enumerate(self.linkdef_list)])
             pool.close()
 
@@ -155,7 +155,7 @@ def _link(params):
         lockfile (str): path of lock file
     """
 
-    n_jobs_folds, verbose, seed, link_id, chain_len, link, skip_runerror, skip_ioerror, db_string, lockfile, output_dir, timestamp, detailed_save = params
+    n_jobs_folds, verbose, seed, link_id, chain_len, link, skip_runerror, skip_ioerror, db_string, lockfile, detailed_save = params
 
     link_string = "Running chain link %g / %g %s\n%s" % (link_id + 1, chain_len, db_string, link.db_key_str)
     link_string_short = "[%g/%g] %s" % (link_id + 1, chain_len, link.db_key_str)
@@ -181,53 +181,47 @@ def _link(params):
             print('[RunErr] ' + link_string_short)
             raise  # re-raise
     finally:
-        if isinstance(link.result, dict):
-            link.info['success'] = True
-            link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
-            link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
-            result = {k: v for k, v in link.result.items() if detailed_save or not k.startswith('forest_contrib')}
-            db_dict = OrderedDict([('accuracy', result['accuracy']),
-                                   ('accuracy_ste', result['accuracy_ste']),
-                                   ('proc_time', link.info['t_dur']),
-                                   ('result', json.dumps(result)),
-                                   ('info', json.dumps(link.db_info) if detailed_save else None),
-                                   ('t_start', link.info['t_start']),
-                                   ('t_end', link.info['t_end']),
-                                   ('timestamp_start', link.info['t_stamp_start']),
-                                   ('timestamp_end', link.info['t_stamp_end']),
-                                   ('success', link.info['success']),
-                                   ('messages', ", ".join(["[" + m + "]" for m in link.info['messages']]) if detailed_save else None)
-                                   ] +
-                                  list(link.db_key.items()))
-    if isinstance(link.result, dict):
+        link.info['success'] = True
+        link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
+        link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
+        result = {k: v for k, v in link.result.items() if detailed_save or not k.startswith('forest_contrib')}
+        db_dict = OrderedDict([('accuracy', result['accuracy']),
+                               ('accuracy_ste', result['accuracy_ste']),
+                               ('proc_time', link.info['t_dur']),
+                               ('result', json.dumps(result)),
+                               ('info', json.dumps(link.db_info) if detailed_save else None),
+                               ('t_start', link.info['t_start']),
+                               ('t_end', link.info['t_end']),
+                               ('timestamp_start', link.info['t_stamp_start']),
+                               ('timestamp_end', link.info['t_stamp_end']),
+                               ('success', link.info['success']),
+                               ('messages', ", ".join(["[" + m + "]" for m in link.info['messages']]) if detailed_save else None)
+                               ] +
+                              list(link.db_key.items()))
+    try:
+        total_time = 0
+        while os.path.exists(lockfile):
+            time.sleep(0.1)
+            total_time += 0.1
+            if total_time > 100:
+                raise IOError("Timeout reached for lock file\n" + link_string)
+        open(lockfile, 'a').close()
         try:
-            total_time = 0
-            while os.path.exists(lockfile):
-                time.sleep(0.1)
-                total_time += 0.1
-                if total_time > 100:
-                    raise IOError("Timeout reached for lock file\n" + link_string)
-            open(lockfile, 'a').close()
-            try:
-                connect(db_string)['chain'].insert(db_dict)
-            except Exception:
-                if os.path.exists(lockfile):
-                    os.remove(lockfile)
-                raise # re-raise
-        except Exception as ex:
-            if skip_ioerror:
-                warn("An exception of type {0} occured. Arguments:\n{1!r}\n".format(type(ex).__name__, ex.args) +
-                     link_string_short)
-            else:
-                print('[IOErr] ' + link_string_short)
-                raise  # re-raise
-        finally:
+            connect(db_string)['chain'].insert(db_dict)
+        except Exception:
             if os.path.exists(lockfile):
                 os.remove(lockfile)
-    else:
-        for sl in link.result:
-            path = os.path.join(output_dir, 'searchlight_%s_%s.nii' % (list(sl.keys())[0], timestamp))
-            nibabel.save(list(sl.values())[0], path)
+            raise # re-raise
+    except Exception as ex:
+        if skip_ioerror:
+            warn("An exception of type {0} occured. Arguments:\n{1!r}\n".format(type(ex).__name__, ex.args) +
+                 link_string_short)
+        else:
+            print('[IOErr] ' + link_string_short)
+            raise  # re-raise
+    finally:
+        if os.path.exists(lockfile):
+            os.remove(lockfile)
 
     return link
 
@@ -275,17 +269,14 @@ class Analysis:
         self.n_seeds = [len(sl) for sl in seed_lists]
         self.n_samples = len(self.scheme.data[0].labels)
 
-        if 'SearchLight' in str(type(self.clf[0])):
-            cv_outer = DummyCV(self.n_samples)
-        else:
-            if not hasattr(self.scheme, 'cv') or self.scheme.cv is None:
-                if self.is_regression:
-                    cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
-                else:
-                    cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+        if not hasattr(self.scheme, 'cv') or self.scheme.cv is None:
+            if self.is_regression:
+                cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
             else:
-                cv_outer = self.scheme.cv
-            # cv_outer = LeaveOneOut(len(self.y))
+                cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
+        else:
+            cv_outer = self.scheme.cv
+        # cv_outer = LeaveOneOut(len(self.y))
 
         self.n_folds = len(cv_outer)
 
@@ -320,100 +311,91 @@ class Analysis:
                                             for f, (train_index, test_index) in enumerate(cv_outer)])
             pool.close()
 
-        if 'SearchLight' not in str(type(self.clf[0])):
-            for f, (train_index, test_index) in enumerate(cv_outer):
-                result_channels_fold, result_meta_fold = results[f]
-                if self.n_channels > 1:
-                    result_meta['y_pred'][test_index] = result_meta_fold['y_pred']
-                for c in range(self.n_channels):
-                    for s in range(self.n_seeds[c]):
-                        result_channels[c][s]['y_pred'][test_index] = result_channels_fold[c][s]['y_pred']
-                        if self.param_grid[c] is not None:
-                            result_channels[c][s]['grid_scores'][f] = result_channels_fold[c][s]['grid_scores']
-                        if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
-                            if 'feature_importance' not in result_channels[c][s]:
-                                result_channels[c][s]['feature_importance'] = np.full((self.n_folds, len(result_channels_fold[c][s]['feature_importance'])), np.nan)
-                            result_channels[c][s]['feature_importance'][f, :] = result_channels_fold[c][s]['feature_importance']
-                        elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
-                            if 'feature_importance' not in result_channels[c][s]:
-                                result_channels[c][s]['feature_importance'] = dict()
-                            for k in result_channels[0][c]['feature_importance'].keys():
-                                if k not in result_channels[c][s]['feature_importance']:
-                                    result_channels[c][s]['feature_importance'][k] = np.full((self.n_folds, len(result_channels_fold[c][s]['feature_importance'][k])), np.nan)
-                                result_channels[c][s]['feature_importance'][k][f, :] = result_channels_fold[c][s]['feature_importance'][k]
+        for f, (train_index, test_index) in enumerate(cv_outer):
+            result_channels_fold, result_meta_fold = results[f]
+            if self.n_channels > 1:
+                result_meta['y_pred'][test_index] = result_meta_fold['y_pred']
+            for c in range(self.n_channels):
+                for s in range(self.n_seeds[c]):
+                    result_channels[c][s]['y_pred'][test_index] = result_channels_fold[c][s]['y_pred']
+                    if self.param_grid[c] is not None:
+                        result_channels[c][s]['grid_scores'][f] = result_channels_fold[c][s]['grid_scores']
+                    if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
+                        if 'feature_importance' not in result_channels[c][s]:
+                            result_channels[c][s]['feature_importance'] = np.full((self.n_folds, len(result_channels_fold[c][s]['feature_importance'])), np.nan)
+                        result_channels[c][s]['feature_importance'][f, :] = result_channels_fold[c][s]['feature_importance']
+                    elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
+                        if 'feature_importance' not in result_channels[c][s]:
+                            result_channels[c][s]['feature_importance'] = dict()
+                        for k in result_channels[0][c]['feature_importance'].keys():
+                            if k not in result_channels[c][s]['feature_importance']:
+                                result_channels[c][s]['feature_importance'][k] = np.full((self.n_folds, len(result_channels_fold[c][s]['feature_importance'][k])), np.nan)
+                            result_channels[c][s]['feature_importance'][k][f, :] = result_channels_fold[c][s]['feature_importance'][k]
 
 
         result = dict()
         for c in range(self.n_channels):
             pfx = '%g_' % c if self.multi_channel else ''
+            result = self.assess_performance(pfx, result_channels[c], container=result)
 
-            if 'SearchLight' in str(type(self.clf[0])):
-                result = [{'seed%g' % s: results[0][0][c][s]['searchlight']} for s in range(self.n_seeds[c])]
-            else:
-                result = self.assess_performance(pfx, result_channels[c], container=result)
+            if hasattr(self.clf[c], 'votes'):
+                result[pfx + 'votes'] = np.nanmean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0).tolist()
+            if hasattr(self.clf[c], 'votes_pooled'):
+                result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0).tolist()
 
-                if hasattr(self.clf[c], 'votes'):
-                    result[pfx + 'votes'] = np.nanmean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0).tolist()
-                if hasattr(self.clf[c], 'votes_pooled'):
-                    result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0).tolist()
+            if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
+                with warnings.catch_warnings():  # catch stupid behavior of nanmean
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
+            elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
+                result[pfx + 'forest_contrib'] = {}
+                with warnings.catch_warnings():  # catch stupid behavior of nanmean
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    for k in result_channels[0][c]['feature_importance'].keys():
+                        result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
 
-                if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
-                    with warnings.catch_warnings():  # catch stupid behavior of nanmean
-                        warnings.simplefilter("ignore", RuntimeWarning)
-                        result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
-                elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
-                    result[pfx + 'forest_contrib'] = {}
-                    with warnings.catch_warnings():  # catch stupid behavior of nanmean
-                        warnings.simplefilter("ignore", RuntimeWarning)
-                        for k in result_channels[0][c]['feature_importance'].keys():
-                            result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
-
-                if self.param_grid[c] is not None:
-                    grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
-                    grid_scores_ste = (np.std(np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=1), axis=0) / self.n_folds).tolist()
-                    result[pfx + 'grid_scores'] = [(param, grid_scores_mean[i], grid_scores_ste[i]) for i, param in
-                                                          enumerate([score.parameters for score in self.pipeline[c].grid_scores_])]
+            if self.param_grid[c] is not None:
+                grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
+                grid_scores_ste = (np.std(np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=1), axis=0) / self.n_folds).tolist()
+                result[pfx + 'grid_scores'] = [(param, grid_scores_mean[i], grid_scores_ste[i]) for i, param in
+                                                      enumerate([score.parameters for score in self.pipeline[c].grid_scores_])]
 
         if self.n_channels > 1:
             result = self.assess_performance('', [result_meta], container=result)
             print('meta:', result['predictions'])
 
-        if 'SearchLight' not in str(type(self.clf[0])):
-            if verbose:
-                print('***************************************************')
-                for c in range(self.n_channels):
-                    pfx = '%g_' % c if self.multi_channel else ''
+        if verbose:
+            print('***************************************************')
+            for c in range(self.n_channels):
+                pfx = '%g_' % c if self.multi_channel else ''
 
-                    print('***********       Channel (%g / %g)       ***********' % (c + 1, self.n_channels))
-                    print("Accuracy: %.5f +- %.5f %s" % (result[pfx + 'accuracy'], result[pfx + 'accuracy_ste'],
-                          ['%.5f' % acc for acc in result[pfx + 'accuracy_seed']]))
-                    if self.is_regression:
-                        print('Explained variance: %.4f%%' % (100 * result[pfx + 'explained_variance']))
-                    else:
-                        print(result[pfx + 'classification_report'])
+                print('***********       Channel (%g / %g)       ***********' % (c + 1, self.n_channels))
+                print("Accuracy: %.5f +- %.5f %s" % (result[pfx + 'accuracy'], result[pfx + 'accuracy_ste'],
+                      ['%.5f' % acc for acc in result[pfx + 'accuracy_seed']]))
+                if self.is_regression:
+                    print('Explained variance: %.4f%%' % (100 * result[pfx + 'explained_variance']))
+                else:
+                    print(result[pfx + 'classification_report'])
 
-                    if verbose > 2:
-                        if hasattr(self.clf[c], 'votes'):
-                            print('votes:', *np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0), sep='\n')
-                        if hasattr(self.clf[c], 'votes_pooled'):
-                            print('votes pooled:', np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0))
-                        if self.param_grid[c] is not None:
-                            for param, av, ste in result[pfx + 'grid_scores']:
-                                print('%s: %.5f +- %.5f' % (param, av, ste))
-                if self.n_channels > 1:
-                    print('***********       Combined Results       ***********')
-                    print("Accuracy: %.5f +- %.5f %s" % (result['accuracy'], result['accuracy_ste'],
-                          ['%.5f' % acc for acc in result['accuracy_seed']]))
-                    if self.is_regression:
-                        print('Explained variance: %.4f%%' % 100 * result['explained_variance'])
-                    else:
-                        print(result['classification_report'])
-                if self.name:
-                    print('\tof << %s >>' % self.name)
-                print('***************************************************')
-
-        else:
-            print('Searchlight finished!')
+                if verbose > 2:
+                    if hasattr(self.clf[c], 'votes'):
+                        print('votes:', *np.mean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0), sep='\n')
+                    if hasattr(self.clf[c], 'votes_pooled'):
+                        print('votes pooled:', np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0))
+                    if self.param_grid[c] is not None:
+                        for param, av, ste in result[pfx + 'grid_scores']:
+                            print('%s: %.5f +- %.5f' % (param, av, ste))
+            if self.n_channels > 1:
+                print('***********       Combined Results       ***********')
+                print("Accuracy: %.5f +- %.5f %s" % (result['accuracy'], result['accuracy_ste'],
+                      ['%.5f' % acc for acc in result['accuracy_seed']]))
+                if self.is_regression:
+                    print('Explained variance: %.4f%%' % 100 * result['explained_variance'])
+                else:
+                    print(result['classification_report'])
+            if self.name:
+                print('\tof << %s >>' % self.name)
+            print('***************************************************')
 
         return result
 
@@ -460,9 +442,15 @@ class Analysis:
                 if 'fs_nested' in self.steps and hasattr(self.steps[c]['fs_nested'].estimator, 'random_state'):
                     self.steps['fs_nested'].estimator.random_state = seed_
                 if self.param_grid[c] is None:
-                    self.clf[c].fit(train_cache[c], labels_train)
+                    if type(self.clf[c]) == nilearn.decoding.searchlight.SearchLight:
+                        self.clf[c].fit(check_niimg_4d(train_cache[c]), labels_train)
+                    else:
+                        self.clf[c].fit(train_cache[c], labels_train)
                 else:  # (2 /2) else we have to fit the entire pipeline for each seed
-                    self.pipeline[c].fit(images_train, labels_train)
+                    if type(self.clf[c]) == nilearn.decoding.searchlight.SearchLight:
+                        self.pipeline[c].fit(check_niimg_4d(images_train), labels_train)
+                    else:
+                        self.pipeline[c].fit(images_train, labels_train)
                     # train_cache = Pipeline(self.pipeline.steps[:-1]).fit_transform(images_train, labels_train)
                     # self.clf.fit(train_cache, labels_train)
 
@@ -475,11 +463,19 @@ class Analysis:
                     self.clf[c] = self.pipeline[c].best_estimator_._final_estimator
                     # self.pipeline[c] = self.pipeline[c].best_estimator_
 
-                    train_cache[c] = Pipeline(self.steps[c][:-1]).transform(images_train)
-
+                    if type(self.clf[c]) == nilearn.decoding.searchlight.SearchLight:
+                        train_cache[c] = Pipeline(self.steps[c][:-1]).transform(check_niimg_4d(images_train))
+                    else:
+                        train_cache[c] = Pipeline(self.steps[c][:-1]).transform(images_train)
                 if test_cache[c] is None:
-                    test_cache[c] = Pipeline(self.steps[c][:-1]).transform(images_test)
-                predictions = self.clf[c].predict(test_cache[c])
+                    if type(self.clf[c]) == nilearn.decoding.searchlight.SearchLight:
+                        test_cache[c] = Pipeline(self.steps[c][:-1]).transform(check_niimg_4d(images_test))
+                    else:
+                        test_cache[c] = Pipeline(self.steps[c][:-1]).transform(images_test)
+                if type(self.clf[c]) == nilearn.decoding.searchlight.SearchLight:
+                    predictions = self.clf[c].predict(check_niimg_4d(test_cache[c]))
+                else:
+                    predictions = self.clf[c].predict(test_cache[c])
                 if self.n_channels > 1 and not self.is_regression:
                     if hasattr(self.clf[c], 'predict_graded'):
                         predictions_graded = self.clf[c].predict_graded(test_cache[c])
@@ -523,10 +519,7 @@ class Analysis:
                         result_channels[c][s]['feature_importance'][k][features[k]] = \
                             np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
 
-                if 'SearchLight' in str(type(self.clf[0])):
-                    result_channels[c][s]['searchlight'] = predictions
-                else:
-                    result_channels[c][s]['y_pred'] = predictions.astype(float)
+                result_channels[c][s]['y_pred'] = predictions.astype(float)
                 if self.n_channels > 1 and not self.is_regression:
                     result_channels[c][s]['y_pred_graded'] = predictions_graded.astype(float)
                 if hasattr(self.clf[c], 'votes_pooled'):
