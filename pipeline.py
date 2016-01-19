@@ -234,7 +234,10 @@ def _link(params):
             if not os.path.exists(os.path.dirname(output_path)):
                 os.makedirs(os.path.dirname(output_path))
             if os.path.exists(path):
-                os.remove(path)
+                # new_path = '%s_backup-%s%s' % (os.path.splitext(output_path)[0], time.strftime("%Y%m%d-%H%M%S"), os.path.splitext(output_path)[1])
+                # os.rename(path, new_path)
+                if os.path.splitext(output_path)[1] == '.nii':
+                    os.remove(path)
                 # path = '%s_%s%s' % (os.path.splitext(output_path)[0], time.strftime("%Y%m%d-%H%M%S"), os.path.splitext(output_path)[1])
             nibabel.save(img, path)
             print('[%s] Saved searchlight result in %s' % (time.strftime("%d.%m %H:%M:%S"), path))
