@@ -60,22 +60,22 @@ class Chain:
     def __init__(self, linkdef_list):
         self.linkdef_list = linkdef_list
 
-    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=2, seed=None, output_path=None, recompute=False,
+    def run(self, n_jobs_links=1, n_jobs_folds=1, searchlight=False, verbose=2, seed=0, output_path=None, recompute=False,
             skip_runerror=True, skip_ioerror=False, zip_code_dirs=None, detailed_save=False):
         """
 
         Args:
-            zip_code_dirs:
-            detailed_save:
-            test_mode (bool): run in test-mode (enhanced debugging)
             n_jobs_links (int): number of parallell jobs for links
             n_jobs_folds (int): number of parallell jobs for folds
+            searchlight: whether the analysis is a searchlight analysis (default: False)
             verbose (int): verbosity level
             seed (None, int): seed for random number generator
             output_path: directoy in which analyses are saved as pickle files
             recompute (bool): recompute items present in the provided database (if one is provided)
             skip_runerror: skip classifier-related errors
             skip_ioerror: skip I/O errors
+            zip_code_dirs: if a list of directories is passed, the encontained python files are saved as a zip file
+            detailed_save: if True, more analysis results are saved (default: False)
         """
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -83,27 +83,31 @@ class Chain:
         if n_jobs_links > 1 and n_jobs_folds > 1:
             raise Exception('You cannot set both n_jobs_chain and n_jobs_folds > 1.')
 
-        if output_path is None:
-            db_string = 'sqlite:///:memory:'
-            output_dir = '/tmp/'
-        elif os.path.splitext(output_path)[1] == '.db':
-            output_dir = os.path.splitext(output_path)[0]
-            if os.path.exists(output_path) and not recompute:
-                db_string = 'sqlite:///%s' % output_path
-                db = connect(db_string)
-                in_db = []
-                for i, linkdef in enumerate(self.linkdef_list):
-                    where = ' '.join(["AND %s IS '%s'" % (k, v) for k, v in linkdef.db_key.items()])[4:]
-                    if list(db.query('SELECT id FROM chain WHERE %s' % where)):  # if entry exists (better way?)
-                        in_db.append(i)
-                for i in sorted(in_db, reverse=True):
-                    print('deleting %s' % linkdef.db_key)
-                    del self.linkdef_list[i] # if entry in database, remove from linkdef_list
+        if not searchlight:
+            if output_path is None:
+                db_string = 'sqlite:///:memory:'
+                output_dir = '/tmp/'
+            elif os.path.splitext(output_path)[1] == '.db':
+                output_dir = os.path.splitext(output_path)[0]
+                if os.path.exists(output_path) and not recompute:
+                    db_string = 'sqlite:///%s' % output_path
+                    db = connect(db_string)
+                    in_db = []
+                    for i, linkdef in enumerate(self.linkdef_list):
+                        where = ' '.join(["AND %s IS '%s'" % (k, v) for k, v in linkdef.db_key.items()])[4:]
+                        if list(db.query('SELECT id FROM chain WHERE %s' % where)):  # if entry exists (better way?)
+                            in_db.append(i)
+                    for i in sorted(in_db, reverse=True):
+                        print('deleting %s' % linkdef.db_key)
+                        del self.linkdef_list[i] # if entry in database, remove from linkdef_list
+                else:
+                    db_string = 'sqlite:///%s_%s.db' % (os.path.splitext(output_path)[0], timestamp)
             else:
-                db_string = 'sqlite:///%s_%s.db' % (os.path.splitext(output_path)[0], timestamp)
+                output_dir = output_path
+                db_string = 'sqlite:///%s' % os.path.join(output_path, 'data_%s.db' % timestamp)
         else:
-            output_dir = output_path
-            db_string = 'sqlite:///%s' % os.path.join(output_path, 'data_%s.db' % timestamp)
+            db_string = None
+            output_dir = os.path.dirname(output_path)
 
         if zip_code_dirs is not None:
             zip_directory_structure(zip_code_dirs, os.path.join(output_dir, 'archive_%s.zip' % timestamp),
@@ -118,14 +122,14 @@ class Chain:
         if n_jobs_links == 1:
             chain = []
             for link_id, linkdef in enumerate(self.linkdef_list):
-                link = _link((n_jobs_folds, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
-                              skip_ioerror, db_string, lockfile, output_dir, timestamp, detailed_save))
+                link = _link((n_jobs_folds, searchlight, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
+                              skip_ioerror, db_string, lockfile, output_path, timestamp, detailed_save))
                 chain.append(link)
 
         else:
             pool = multiprocessing.Pool(None if n_jobs_links == -1 else n_jobs_links)
-            chain = pool.map(_link, [(n_jobs_folds, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
-                                      skip_ioerror, db_string, lockfile, output_dir, timestamp, detailed_save)
+            chain = pool.map(_link, [(n_jobs_folds, searchlight, verbose, seed, link_id, len(self.linkdef_list), linkdef, skip_runerror,
+                                      skip_ioerror, db_string, lockfile, output_path, timestamp, detailed_save)
                                      for link_id, linkdef in enumerate(self.linkdef_list)])
             pool.close()
 
@@ -155,7 +159,7 @@ def _link(params):
         lockfile (str): path of lock file
     """
 
-    n_jobs_folds, verbose, seed, link_id, chain_len, link, skip_runerror, skip_ioerror, db_string, lockfile, output_dir, timestamp, detailed_save = params
+    n_jobs_folds, searchlight, verbose, seed, link_id, chain_len, link, skip_runerror, skip_ioerror, db_string, lockfile, output_path, timestamp, detailed_save = params
 
     link_string = "Running chain link %g / %g %s\n%s" % (link_id + 1, chain_len, db_string, link.db_key_str)
     link_string_short = "[%g/%g] %s" % (link_id + 1, chain_len, link.db_key_str)
@@ -170,7 +174,7 @@ def _link(params):
 
     link.info['messages'] = []
     try:
-        link.result = link.analysis.run(n_jobs_folds=n_jobs_folds, verbose=verbose, seed=seed)
+        link.result = link.analysis.run(n_jobs_folds=n_jobs_folds, searchlight=searchlight, verbose=verbose, seed=seed)
     except Exception as ex:
         link.info['success'] = False
         link.result = False
@@ -181,7 +185,7 @@ def _link(params):
             print('[RunErr] ' + link_string_short)
             raise  # re-raise
     finally:
-        if isinstance(link.result, dict):
+        if not searchlight:
             link.info['success'] = True
             link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
             link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
@@ -199,7 +203,7 @@ def _link(params):
                                    ('messages', ", ".join(["[" + m + "]" for m in link.info['messages']]) if detailed_save else None)
                                    ] +
                                   list(link.db_key.items()))
-    if isinstance(link.result, dict):
+    if not searchlight:
         try:
             total_time = 0
             while os.path.exists(lockfile):
@@ -225,9 +229,9 @@ def _link(params):
             if os.path.exists(lockfile):
                 os.remove(lockfile)
     else:
-        for sl in link.result:
-            path = os.path.join(output_dir, 'searchlight_%s_%s.nii' % (list(sl.keys())[0], timestamp))
-            nibabel.save(list(sl.values())[0], path)
+        for k, img in link.result:
+            path = '%s_%s%s' % (os.path.splitext(output_path)[0], k, os.path.splitext(output_path)[1])
+            nibabel.save(img, path)
 
     return link
 
@@ -256,7 +260,7 @@ class Analysis:
         self.steps = None
         self.param_grid = None
 
-    def run(self, n_jobs_folds=1, verbose=2, seed=None):
+    def run(self, n_jobs_folds=1, searchlight=False, verbose=2, seed=None):
 
         self.construct_pipe(seed=seed, verbose=verbose)
 
@@ -275,9 +279,7 @@ class Analysis:
         self.n_seeds = [len(sl) for sl in seed_lists]
         self.n_samples = len(self.scheme.data[0].labels)
 
-        if 'SearchLight' in str(type(self.clf[0])):
-            cv_outer = DummyCV(self.n_samples)
-        else:
+        if not searchlight:
             if not hasattr(self.scheme, 'cv') or self.scheme.cv is None:
                 if self.is_regression:
                     cv_outer = KFold(self.n_samples, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
@@ -285,42 +287,44 @@ class Analysis:
                     cv_outer = StratifiedKFold(self.y_true, n_folds=min(int(self.n_samples/4.), 10), random_state=seed)
             else:
                 cv_outer = self.scheme.cv
-            # cv_outer = LeaveOneOut(len(self.y))
 
-        self.n_folds = len(cv_outer)
+            self.n_folds = len(cv_outer)
 
-        result_channels = [[None] * self.n_seeds[c] for c in range(self.n_channels)]
-        for c in range(self.n_channels):
-            for s in range(self.n_seeds[c]):
-                result_channels[c][s] = dict(
-                    y_pred=np.full(self.n_samples, np.nan),
-                    grid_scores=[None] * self.n_folds
+            result_channels = [[None] * self.n_seeds[c] for c in range(self.n_channels)]
+            for c in range(self.n_channels):
+                for s in range(self.n_seeds[c]):
+                    result_channels[c][s] = dict(
+                        y_pred=np.full(self.n_samples, np.nan),
+                        grid_scores=[None] * self.n_folds
+                    )
+                    if self.n_channels > 1 and not self.is_regression:
+                        result_channels[c][s].update(
+                            y_pred_graded=np.full(self.n_samples, np.nan)
+                        )
+                    if self.scheme.is_multiroi[c]:
+                        result_channels[c][s].update(
+                            votes=np.full((len(self.scheme.masker_args[0]['rois']), self.n_samples), np.nan),
+                            votes_pooled=np.full(self.n_samples, np.nan),
+                        )
+            if self.n_channels > 1:
+                result_meta = dict(
+                    y_pred=np.full(self.n_samples, np.nan)
                 )
-                if self.n_channels > 1 and not self.is_regression:
-                    result_channels[c][s].update(
-                        y_pred_graded=np.full(self.n_samples, np.nan)
-                    )
-                if self.scheme.is_multiroi[c]:
-                    result_channels[c][s].update(
-                        votes=np.full((len(self.scheme.masker_args[0]['rois']), self.n_samples), np.nan),
-                        votes_pooled=np.full(self.n_samples, np.nan),
-                    )
-        if self.n_channels > 1:
-            result_meta = dict(
-                y_pred=np.full(self.n_samples, np.nan)
-            )
+        else:
+            cv_outer = DummyCV(self.n_samples)
+            self.n_folds = len(cv_outer)
 
         if n_jobs_folds == 1:
             results = []
             for f, (train_index, test_index) in enumerate(cv_outer):
-                results.append(self._fold((f, train_index, test_index, seed_lists, verbose)))
+                results.append(self._fold((f, train_index, test_index, seed_lists, searchlight, verbose)))
         else:
             pool = multiprocessing.Pool(None if n_jobs_folds == -1 else n_jobs_folds)
-            results = pool.map(self._fold, [(f, train_index, test_index, seed_lists, verbose)
+            results = pool.map(self._fold, [(f, train_index, test_index, seed_lists, searchlight, verbose)
                                             for f, (train_index, test_index) in enumerate(cv_outer)])
             pool.close()
 
-        if 'SearchLight' not in str(type(self.clf[0])):
+        if not searchlight:
             for f, (train_index, test_index) in enumerate(cv_outer):
                 result_channels_fold, result_meta_fold = results[f]
                 if self.n_channels > 1:
@@ -342,43 +346,34 @@ class Analysis:
                                     result_channels[c][s]['feature_importance'][k] = np.full((self.n_folds, len(result_channels_fold[c][s]['feature_importance'][k])), np.nan)
                                 result_channels[c][s]['feature_importance'][k][f, :] = result_channels_fold[c][s]['feature_importance'][k]
 
+            result = dict()
+            for c in range(self.n_channels):
 
-        result = dict()
-        for c in range(self.n_channels):
-            pfx = '%g_' % c if self.multi_channel else ''
+                    pfx = '%g_' % c if self.multi_channel else ''
+                    result = self.assess_performance(pfx, result_channels[c], container=result)
 
-            if 'SearchLight' in str(type(self.clf[0])):
-                result = [{'seed%g' % s: results[0][0][c][s]['searchlight']} for s in range(self.n_seeds[c])]
-            else:
-                result = self.assess_performance(pfx, result_channels[c], container=result)
+                    if hasattr(self.clf[c], 'votes'):
+                        result[pfx + 'votes'] = np.nanmean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0).tolist()
+                    if hasattr(self.clf[c], 'votes_pooled'):
+                        result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0).tolist()
 
-                if hasattr(self.clf[c], 'votes'):
-                    result[pfx + 'votes'] = np.nanmean([result_channels[c][s]['votes'] for s in range(self.n_seeds[c])], axis=0).tolist()
-                if hasattr(self.clf[c], 'votes_pooled'):
-                    result[pfx + 'votes_pooled'] = np.mean([result_channels[c][s]['votes_pooled'] for s in range(self.n_seeds[c])], axis=0).tolist()
+                    if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
+                        with warnings.catch_warnings():  # catch stupid behavior of nanmean
+                            warnings.simplefilter("ignore", RuntimeWarning)
+                            result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
+                    elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
+                        result[pfx + 'forest_contrib'] = {}
+                        with warnings.catch_warnings():  # catch stupid behavior of nanmean
+                            warnings.simplefilter("ignore", RuntimeWarning)
+                            for k in result_channels[0][c]['feature_importance'].keys():
+                                result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
 
-                if isinstance(self.clf[c], (RandomForestRegressor, RandomForestClassifier)) and isinstance(self.scheme.data[c].data, np.ndarray):
-                    with warnings.catch_warnings():  # catch stupid behavior of nanmean
-                        warnings.simplefilter("ignore", RuntimeWarning)
-                        result[pfx + 'forest_contrib'] = np.nanmean([result_channels[c][s]['feature_importance'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
-                elif self.scheme.is_multiroi[c] and isinstance(self.clf[c].base_estimator, (RandomForestRegressor, RandomForestClassifier)):
-                    result[pfx + 'forest_contrib'] = {}
-                    with warnings.catch_warnings():  # catch stupid behavior of nanmean
-                        warnings.simplefilter("ignore", RuntimeWarning)
-                        for k in result_channels[0][c]['feature_importance'].keys():
-                            result[pfx + 'forest_contrib'][k] = np.mean([result_channels[c][s]['feature_importance'][k] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
+                    if self.param_grid[c] is not None:
+                        grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
+                        grid_scores_ste = (np.std(np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=1), axis=0) / self.n_folds).tolist()
+                        result[pfx + 'grid_scores'] = [(param, grid_scores_mean[i], grid_scores_ste[i]) for i, param in
+                                                              enumerate([score.parameters for score in self.pipeline[c].grid_scores_])]
 
-                if self.param_grid[c] is not None:
-                    grid_scores_mean = np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=(0, 1)).tolist()
-                    grid_scores_ste = (np.std(np.mean([result_channels[c][s]['grid_scores'] for s in range(self.n_seeds[c])], axis=1), axis=0) / self.n_folds).tolist()
-                    result[pfx + 'grid_scores'] = [(param, grid_scores_mean[i], grid_scores_ste[i]) for i, param in
-                                                          enumerate([score.parameters for score in self.pipeline[c].grid_scores_])]
-
-        if self.n_channels > 1:
-            result = self.assess_performance('', [result_meta], container=result)
-            print('meta:', result['predictions'])
-
-        if 'SearchLight' not in str(type(self.clf[0])):
             if verbose:
                 print('***************************************************')
                 for c in range(self.n_channels):
@@ -412,13 +407,17 @@ class Analysis:
                     print('\tof << %s >>' % self.name)
                 print('***************************************************')
 
+            if self.n_channels > 1:
+                result = self.assess_performance('', [result_meta], container=result)
+                print('meta:', result['predictions'])
         else:
+            result = {'seed%g' % s: results[0][0][0][s]['searchlight'] for s in range(self.n_seeds[0])}
             print('Searchlight finished!')
 
         return result
 
     def _fold(self, params):
-        f, train_index, test_index, seed_lists, verbose = params
+        f, train_index, test_index, seed_lists, searchlight, verbose = params
 
         train_cache = [None] * self.n_channels
         test_cache = [None] * self.n_channels
@@ -523,17 +522,17 @@ class Analysis:
                         result_channels[c][s]['feature_importance'][k][features[k]] = \
                             np.mean(contrib if self.is_regression else contrib[:, :, 0], axis=0)
 
-                if 'SearchLight' in str(type(self.clf[0])):
-                    result_channels[c][s]['searchlight'] = predictions
-                else:
+                if not searchlight:
                     result_channels[c][s]['y_pred'] = predictions.astype(float)
-                if self.n_channels > 1 and not self.is_regression:
-                    result_channels[c][s]['y_pred_graded'] = predictions_graded.astype(float)
-                if hasattr(self.clf[c], 'votes_pooled'):
-                    result_channels[c][s]['votes_pooled'] = self.clf[c].votes_pooled
-                if hasattr(self.clf[c], 'votes'):
-                    for i, k in enumerate(self.clf[c].estimators_.keys()):
-                        result_channels[c][s]['votes'][k] = np.array(self.clf[c].votes)[i, :]
+                    if self.n_channels > 1 and not self.is_regression:
+                        result_channels[c][s]['y_pred_graded'] = predictions_graded.astype(float)
+                    if hasattr(self.clf[c], 'votes_pooled'):
+                        result_channels[c][s]['votes_pooled'] = self.clf[c].votes_pooled
+                    if hasattr(self.clf[c], 'votes'):
+                        for i, k in enumerate(self.clf[c].estimators_.keys()):
+                            result_channels[c][s]['votes'][k] = np.array(self.clf[c].votes)[i, :]
+                else:
+                    result_channels[c][s]['searchlight'] = predictions
 
         if self.n_channels > 1:
             result_meta['y_pred'] = self.meta_predict(
