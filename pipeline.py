@@ -235,7 +235,7 @@ def _link(params):
                 os.makedirs(os.path.dirname(output_path))
             nibabel.save(img, path)
             print('[%s] Saved searchlight result in %s' % (time.strftime("%Y%m%d-%H%M%S"), path))
-            # print('Elapsed time: %.1f minutes' % link.info['t_dur'] / 60.)
+            print('Elapsed time: %.1f minutes' % (link.info['t_dur'] / 60.))
 
     return link
 
