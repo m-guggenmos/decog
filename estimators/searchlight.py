@@ -104,7 +104,7 @@ class SearchLight(BaseEstimator):
         """
 
         # Compute world coordinates of all in-mask voxels.
-        self.affine = nibabel.load(imgs[0]).affine
+        self.affine = nibabel.load(imgs[0]).affine if isinstance(imgs[0], str) else imgs[0].affine
         mask, mask_affine = masking._load_mask_img(self.mask_img)
         mask_coords = np.where(mask != 0)
         mask_coords = np.asarray(mask_coords + (np.ones(len(mask_coords[0]),

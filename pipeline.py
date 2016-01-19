@@ -185,10 +185,10 @@ def _link(params):
             print('[RunErr] ' + link_string_short)
             raise  # re-raise
     finally:
+        link.info['success'] = True
+        link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
+        link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
         if not searchlight:
-            link.info['success'] = True
-            link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
-            link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
             result = {k: v for k, v in link.result.items() if detailed_save or not k.startswith('forest_contrib')}
             db_dict = OrderedDict([('accuracy', result['accuracy']),
                                    ('accuracy_ste', result['accuracy_ste']),
@@ -229,9 +229,13 @@ def _link(params):
             if os.path.exists(lockfile):
                 os.remove(lockfile)
     else:
-        for k, img in link.result:
+        for k, img in link.result.items():
             path = '%s_%s%s' % (os.path.splitext(output_path)[0], k, os.path.splitext(output_path)[1])
+            if not os.path.exists(os.path.dirname(output_path)):
+                os.makedirs(os.path.dirname(output_path))
             nibabel.save(img, path)
+            print('[%s] Saved searchlight result in %s' % (time.strftime("%Y%m%d-%H%M%S"), path))
+            # print('Elapsed time: %.1f minutes' % link.info['t_dur'] / 60.)
 
     return link
 
@@ -262,7 +266,7 @@ class Analysis:
 
     def run(self, n_jobs_folds=1, searchlight=False, verbose=2, seed=None):
 
-        self.construct_pipe(seed=seed, verbose=verbose)
+        self.construct_pipe(seed=seed, verbose=verbose, n_jobs_folds=n_jobs_folds)
 
         for i, data in enumerate(self.scheme.data):
             assert np.array_equal(data.labels, self.scheme.data[0].labels), "Labels of all channels must be identical"
@@ -441,7 +445,7 @@ class Analysis:
 
             for s, seed_ in enumerate(seed_lists[c]):
 
-                if verbose > 1:
+                if verbose > 1 and not searchlight:
                     print('[%s] Fold %g / %g Channel %g / %g Seed %g / %g' %
                           (time.strftime("%d.%m %H:%M:%S"), f + 1, self.n_folds, c + 1, self.n_channels, s + 1, self.n_seeds[c]))
                     if self.name:
@@ -578,7 +582,7 @@ class Analysis:
             # return np.unique(self.scheme.data[0].labels)[((1 + np.sign(weighted_mean)) / 2).astype(int)]
             return np.round(weighted_mean)
 
-    def construct_pipe(self, seed, verbose):
+    def construct_pipe(self, seed, verbose, n_jobs_folds=None):
 
         self.masker, self.clf, self.param_grid, self.steps, self.pipeline = [None] * self.n_channels, \
                   [None] * self.n_channels, [None] * self.n_channels, [None] * self.n_channels, [None] * self.n_channels
@@ -696,6 +700,9 @@ class Analysis:
                 #         if isinstance(v, list):
                 #             self.param_grid[c]['clf__base_estimator__%s' % k] = v
             else:
+                if n_jobs_folds is not None:
+                    self.scheme.pipeline[c].clf.clf_args.update(n_jobs=n_jobs_folds)
+                self.scheme.pipeline[c].clf.clf_args.update(verbose=verbose)
                 self.clf[c] = self.scheme.pipeline[c].clf.clf(**self.scheme.pipeline[c].clf.clf_args)
                 if np.any([isinstance(v, list) for v in self.scheme.pipeline[c].clf.clf_args.values()]):
                     for k, v in self.scheme.pipeline[c].clf.clf_args.items():
