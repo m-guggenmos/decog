@@ -233,8 +233,11 @@ def _link(params):
             path = '%s_%s%s' % (os.path.splitext(output_path)[0], k, os.path.splitext(output_path)[1])
             if not os.path.exists(os.path.dirname(output_path)):
                 os.makedirs(os.path.dirname(output_path))
+            if os.path.exists(path):
+                os.remove(path)
+                # path = '%s_%s%s' % (os.path.splitext(output_path)[0], time.strftime("%Y%m%d-%H%M%S"), os.path.splitext(output_path)[1])
             nibabel.save(img, path)
-            print('[%s] Saved searchlight result in %s' % (time.strftime("%Y%m%d-%H%M%S"), path))
+            print('[%s] Saved searchlight result in %s' % (time.strftime("%d.%m %H:%M:%S"), path))
             print('Elapsed time: %.1f minutes' % (link.info['t_dur'] / 60.))
 
     return link
