@@ -708,7 +708,7 @@ class Analysis:
             else:
                 if n_jobs_folds is not None:
                     self.scheme.pipeline[c].clf.clf_args.update(n_jobs=n_jobs_folds)
-                self.scheme.pipeline[c].clf.clf_args.update(verbose=verbose)
+                self.scheme.pipeline[c].clf.clf_args.update(verbose=verbose-1)
                 self.clf[c] = self.scheme.pipeline[c].clf.clf(**self.scheme.pipeline[c].clf.clf_args)
                 if np.any([isinstance(v, list) for v in self.scheme.pipeline[c].clf.clf_args.values()]):
                     for k, v in self.scheme.pipeline[c].clf.clf_args.items():
