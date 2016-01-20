@@ -168,9 +168,10 @@ def _link(params):
 
     link.info['t_start'], link.info['t_stamp_start'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
 
-    print("\n-------  %s  -------" % link.info['t_start'])
-    print(link_string)
-    print("-------------------------------------\n")
+    if not searchlight:
+        print("\n-------  %s  -------" % link.info['t_start'])
+        print(link_string)
+        print("-------------------------------------\n")
 
     link.info['messages'] = []
     try:
