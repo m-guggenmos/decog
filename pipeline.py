@@ -133,10 +133,9 @@ class Chain:
                                      for link_id, linkdef in enumerate(self.linkdef_list)])
             pool.close()
 
-        print('Failed links:')
         for i, link in enumerate(chain):
             if not link.info['success']:
-                print('%s' % self.linkdef_list[i].db_key)
+                print('Failed link: %s' % self.linkdef_list[i].db_key)
                 for message in link.info['messages']:
                     print(message)
 
@@ -434,14 +433,17 @@ class Analysis:
         test_cache = [None] * self.n_channels
 
         n_test = len(test_index)
+        if not searchlight:
+            n_rois = sum([len(m) for m in self.scheme.masker_args[0]['rois']]) \
+                if isinstance(self.scheme.masker_args[0]['rois'], tuple) else len(self.scheme.masker_args[0]['rois'])
 
         result_channels = [[None] * self.n_seeds[c] for c in range(self.n_channels)]
         for c in range(self.n_channels):
             for s in range(self.n_seeds[c]):
                 result_channels[c][s] = dict()
-                if self.scheme.is_multiroi[c]:
+                if self.scheme.is_multiroi[c] and not searchlight:
                     result_channels[c][s].update(
-                        votes=np.full((len(self.scheme.masker_args[0]['rois']), n_test), np.nan),
+                        votes=np.full((n_rois, n_test), np.nan),
                     )
 
         result_meta = dict()
