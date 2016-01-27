@@ -4,6 +4,7 @@ from nilearn import _utils
 from nilearn.image import smooth_img, resample_img
 import numpy as np
 from nibabel import Nifti1Image, load
+from collections import OrderedDict, Sequence
 
 FDICT = dict(mean=(np.mean, dict(axis=1)), max=(np.max, dict(axis=1)))
 
@@ -15,15 +16,13 @@ class MultiRoiMasker(BaseMasker):
         self.mask_img = mask_img
         if not rois:
             raise Exception('MultiRoiMasker requires at least one ROI!')
-        elif not isinstance(rois, list):
+        elif not isinstance(rois, Sequence):
             rois = [rois]
         self.rois = rois
         self.smoothing_fwhm = smoothing_fwhm
         self.resample = resample
         self.combine_rois = combine_rois
         self.searchlight = searchlight
-
-        self.masker = dict()
 
     def fit(self):
 
@@ -36,13 +35,24 @@ class MultiRoiMasker(BaseMasker):
             self.mask = load(self.mask_img)
             masker = SearchlightMasker(smoothing_fwhm=self.smoothing_fwhm, target_affine=self.desired_affine)
 
-        for roi_id, roi in enumerate(self.rois):
-            if self.searchlight:
-                self.masker[roi_id] = masker
-            else:
-                self.masker[roi_id] = NiftiMasker(mask_img=resample_img(roi, interpolation='nearest', target_affine=self.desired_affine),
-                                                  smoothing_fwhm=self.smoothing_fwhm)
-            self.masker[roi_id].fit()
+        if not isinstance(self.rois, tuple):
+            self.masker = dict()
+            for roi_id, roi in enumerate(self.rois):
+                if self.searchlight:
+                    self.masker[roi_id] = masker
+                else:
+                    self.masker[roi_id] = NiftiMasker(mask_img=resample_img(roi, interpolation='nearest', target_affine=self.desired_affine),
+                                                      smoothing_fwhm=self.smoothing_fwhm)
+                self.masker[roi_id].fit()
+        else:
+            self.masker = [None] * len(self.rois)  # first create as list..
+            for m, rois_modality in enumerate(self.rois):
+                self.masker[m] = dict()
+                for roi_id, roi in enumerate(rois_modality):
+                    self.masker[m][roi_id] = NiftiMasker(mask_img=resample_img(roi, interpolation='nearest', target_affine=self.desired_affine),
+                                                         smoothing_fwhm=self.smoothing_fwhm)
+                    self.masker[m][roi_id].fit()
+            self.masker = tuple(self.masker)  # .. then make conform again
 
         return self
 
@@ -76,16 +86,17 @@ class MultiRoiMasker(BaseMasker):
             if self.searchlight:
                 return {k: (masker.transform(X), self.rois[k]) for k, masker in self.masker.items()}
             else:
-                # print(X)
-                # if not not isinstance(X, list) or not isinstance(X[0], list):
-                return {k: masker.transform(X) for k, masker in self.masker.items()}
-                # else:
-                #     from copy import deepcopy
-                #     X2 = [deepcopy(X), deepcopy(X), deepcopy(X)]
-                #     data = dict()
-                #     for i, x in enumerate(X2):
-                #         data.update({i * len(self.masker) + k: masker.transform(x) for k, masker in self.masker.items()})
-                #     return data
+                if not isinstance(self.masker, tuple):
+                    return {k: masker.transform(X) for k, masker in self.masker.items()}
+                else:
+                    data = dict()
+                    c = 0
+                    for m, modality in enumerate(self.masker):
+                        X_m = [x[m] for x in X]
+                        for k, masker in modality.items():
+                            data.update({c: masker.transform(X_m)})
+                            c += 1
+                    return data
 
 
 
