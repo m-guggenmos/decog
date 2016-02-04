@@ -5,12 +5,13 @@ from nilearn.image import smooth_img, resample_img
 import numpy as np
 from nibabel import Nifti1Image, load
 from collections import OrderedDict, Sequence
+import os
 
 FDICT = dict(mean=(np.mean, dict(axis=1)), max=(np.max, dict(axis=1)))
 
 
 class MultiRoiMasker(BaseMasker):
-    def __init__(self, mask_img=None, rois=None, smoothing_fwhm=None, resample=None, combine_rois=False,
+    def __init__(self, mask_img=None, rois=None, smoothing_fwhm=None, resampling=None, combine_rois=False,
                  searchlight=False):
 
         self.mask_img = mask_img
@@ -20,37 +21,34 @@ class MultiRoiMasker(BaseMasker):
             rois = [rois]
         self.rois = rois
         self.smoothing_fwhm = smoothing_fwhm
-        self.resample = resample
+        self.resampling = resampling
         self.combine_rois = combine_rois
         self.searchlight = searchlight
 
     def fit(self):
 
-        if self.resample is not None:
-            self.desired_affine = np.diag(self.resample * np.ones(3))
+        if self.resampling is not None:
+            resample = np.diag(self.resampling * np.ones(3))
         else:
-            self.desired_affine = None
+            resample =  None
 
-        if self.searchlight:
-            self.mask = load(self.mask_img)
-            masker = SearchlightMasker(smoothing_fwhm=self.smoothing_fwhm, target_affine=self.desired_affine)
+        self.mask_img = resample_img(self.mask_img, target_affine=resample, interpolation='nearest')
 
         if not isinstance(self.rois, tuple):
             self.masker = dict()
             for roi_id, roi in enumerate(self.rois):
-                if self.searchlight:
-                    self.masker[roi_id] = masker
-                else:
-                    self.masker[roi_id] = NiftiMasker(mask_img=resample_img(roi, interpolation='nearest', target_affine=self.desired_affine),
-                                                      smoothing_fwhm=self.smoothing_fwhm)
+                if self.resampling is not None:
+                    roi = resample_img(roi, target_affine=resample, interpolation='nearest')
+                self.masker[roi_id] = NiftiMasker(mask_img=roi)
                 self.masker[roi_id].fit()
         else:
             self.masker = [None] * len(self.rois)  # first create as list..
             for m, rois_modality in enumerate(self.rois):
                 self.masker[m] = dict()
                 for roi_id, roi in enumerate(rois_modality):
-                    self.masker[m][roi_id] = NiftiMasker(mask_img=resample_img(roi, interpolation='nearest', target_affine=self.desired_affine),
-                                                         smoothing_fwhm=self.smoothing_fwhm)
+                    if self.resampling is not None:
+                        roi = resample_img(roi, target_affine=resample, interpolation='nearest')
+                    self.masker[m][roi_id] = NiftiMasker(mask_img=roi)
                     self.masker[m][roi_id].fit()
             self.masker = tuple(self.masker)  # .. then make conform again
 
@@ -64,15 +62,16 @@ class MultiRoiMasker(BaseMasker):
         X: list of Niimg-like objects
         """
 
-        if self.resample is not None:
-            X = resample_img(X, target_affine=self.desired_affine)
+        X = self.preprocess(X)
 
         if self.searchlight:
             affine = self.mask.affine
             shape = self.mask.shape
 
         if self.combine_rois:
-            if self.searchlight:
+            if not self.searchlight:
+                return {0: np.concatenate([masker.transform(X) for masker in self.masker.values()], axis=1)}
+            else:
 #                 ValueError("""Illegal combination of searchlight=True and combine_rois=True: if searchlight should be
 # applied to multiple combined ROIs, combine the ROIs first and supply them as a single processing mask.
 # MultiRoiMasker is the wrong place in this case!""")
@@ -80,12 +79,8 @@ class MultiRoiMasker(BaseMasker):
                             Nifti1Image(np.sum([load(roi).get_data() for roi in self.rois], axis=0), affine=affine))}
                     # [Nifti1Image(np.sum([np.reshape(masker.transform(x), shape) for masker in self.masker.values()], axis=0), affine=affine)
                     #     for x in X]
-            else:
-                return {0: np.concatenate([masker.transform(X) for masker in self.masker.values()], axis=1)}
         else:
-            if self.searchlight:
-                return {k: (masker.transform(X), self.rois[k]) for k, masker in self.masker.items()}
-            else:
+            if not self.searchlight:
                 if not isinstance(self.masker, tuple):
                     return {k: masker.transform(X) for k, masker in self.masker.items()}
                 else:
@@ -97,6 +92,40 @@ class MultiRoiMasker(BaseMasker):
                             data.update({c: masker.transform(X_m)})
                             c += 1
                     return data
+            else:
+                return {k: (masker.transform(X), self.rois[k]) for k, masker in self.masker.items()}
+
+    def preprocess(self, imgs):
+
+        smooth_prefix = '' if self.smoothing_fwhm is None else 's%g' % self.smoothing_fwhm
+        resample_prefix = '' if self.resampling is None else 'r%g' % self.resampling
+
+        if not isinstance(imgs, list):
+            imgs = [imgs]
+
+        path_first = imgs[0] if isinstance(imgs[0], str) else imgs[0].get_filename()
+
+        path_first_resampled = os.path.join(os.path.dirname(path_first), resample_prefix + os.path.basename(path_first))
+        path_first_smoothed = os.path.join(os.path.dirname(path_first), smooth_prefix + resample_prefix + os.path.basename(path_first))
+
+        if self.resampling is not None and self.smoothing_fwhm is not None:
+            if self.resampling is not None and not os.path.exists(path_first_smoothed):
+                if not os.path.exists(path_first_resampled):
+                    imgs = resample_img(imgs, target_affine=np.diag(self.resampling * np.ones(3)))
+                else:
+                    imgs = [os.path.join(os.path.dirname(img), resample_prefix + os.path.basename(img)) if isinstance(img, str)
+                            else os.path.join(os.path.dirname(img.get_filename()), resample_prefix + os.path.basename(img.get_filename())) for img in imgs]
+            if self.smoothing_fwhm is not None:
+                if not os.path.exists(path_first_smoothed):
+                    imgs = smooth_img(imgs, self.smoothing_fwhm)
+                else:
+                    imgs = [os.path.join(os.path.dirname(img), smooth_prefix + resample_prefix + os.path.basename(img)) if isinstance(img, str)
+                            else os.path.join(os.path.dirname(img.get_filename()), smooth_prefix + resample_prefix + os.path.basename(img.get_filename())) for img in imgs]
+        else:
+            imgs = [check_niimg_3d(img) for img in imgs]
+
+        return imgs
+
 
 
 
@@ -192,3 +221,53 @@ class SearchlightMasker(BaseMasker):
             imgs = [check_niimg_3d(img) for img in imgs] if isinstance(imgs, list) else check_niimg_3d(imgs)
 
         return imgs
+
+
+class SmoothResampleMasker(BaseMasker):
+
+    def __init__(self, mask_img=None, smoothing_fwhm=None, resampling=None, searchlight=False):
+
+        self.mask_img = mask_img
+        self.smoothing_fwhm = smoothing_fwhm
+        self.resampling = resampling
+        self.searchlight = searchlight
+
+        self.masker = None
+
+    def fit(self):
+
+        if self.resampling is not None:
+            self.mask_img = resample_img(self.mask_img, target_affine=np.diag(self.resampling * np.ones(3)))
+        self.masker = NiftiMasker(mask_img=self.mask_img)
+        self.masker.fit()
+
+        return self
+
+    def transform(self, imgs, confounds=None):
+
+        smooth_prefix = '' if self.smoothing_fwhm is None else 's%g' % self.smoothing_fwhm
+        resample_prefix = '' if self.smoothing_fwhm is None else 'r%g' % self.smoothing_fwhm
+
+        if not isinstance(imgs, list):
+            imgs = [imgs]
+
+        path_first = imgs[0] if isinstance(imgs[0], str) else imgs[0].get_filename()
+
+        path_first_resampled = os.path.join(os.path.dirname(path_first), resample_prefix + os.path.basename(path_first))
+        path_first_smoothed = os.path.join(os.path.dirname(path_first), smooth_prefix + resample_prefix + os.path.basename(path_first))
+
+        if self.resampling is not None and self.smoothing_fwhm is not None:
+            if self.resampling is not None:
+                if not os.path.exists(path_first_resampled) and not os.path.exists(path_first_smoothed):
+                    imgs = resample_img(imgs, target_affine=np.diag(self.resampling * np.ones(3)))
+                else:
+                    imgs = []
+            if self.smoothing_fwhm is not None:
+                if not os.path.exists(path_first_smoothed):
+                    imgs = smooth_img(imgs, self.smoothing_fwhm)
+                else:
+                    imgs = []
+        else:
+            imgs = [check_niimg_3d(img) for img in imgs]
+
+        return self.masker.transform(imgs)
