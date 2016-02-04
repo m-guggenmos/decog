@@ -4,7 +4,6 @@ import nibabel
 import numpy as np
 
 
-<<<<<<< HEAD
 def get_regressors(dir, labels, file_type=None):
 
     FILE_TYPES = {'header_files': ['.hdr', 'header', 'hdr'],
@@ -22,12 +21,7 @@ def get_regressors(dir, labels, file_type=None):
 
     betas = [nibabel.load(os.path.join(dir, filename)) for filename in sorted(os.listdir(dir))
              if fnmatch.fnmatch(filename, 'beta_*.%s' %(file_extension))]
-=======
-def get_regressors(dir, labels, beta_extension):
 
-    betas = [nibabel.load(os.path.join(dir, filename)) for filename in sorted(os.listdir(dir))
-             if fnmatch.fnmatch(filename, 'beta_*.%s' %(beta_extension))]
->>>>>>> 55768ff2f038f8241ed8c039ca99f0ccc0061e1d
     descrip_last_beta = str(betas[-1].header['descrip'])
     start_ind = descrip_last_beta.find('Sn(')
     end_ind = descrip_last_beta.find(') constant')
