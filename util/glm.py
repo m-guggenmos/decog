@@ -4,9 +4,10 @@ import nibabel
 import numpy as np
 
 
-def get_regressors(dir, labels):
+def get_regressors(dir, labels, beta_extension):
 
-    betas = [nibabel.load(os.path.join(dir, filename)) for filename in sorted(os.listdir(dir)) if fnmatch.fnmatch(filename, 'beta_*.hdr')]
+    betas = [nibabel.load(os.path.join(dir, filename)) for filename in sorted(os.listdir(dir))
+             if fnmatch.fnmatch(filename, 'beta_*.%s' %(beta_extension))]
     descrip_last_beta = str(betas[-1].header['descrip'])
     start_ind = descrip_last_beta.find('Sn(')
     end_ind = descrip_last_beta.find(') constant')

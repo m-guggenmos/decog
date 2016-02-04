@@ -177,7 +177,6 @@ def _link(params):
         link.result = link.analysis.run(n_jobs_folds=n_jobs_folds, searchlight=searchlight, verbose=verbose, seed=seed)
     except Exception as ex:
         link.info['success'] = False
-        link.result = False
         link.info['messages'].append("An exception of type {0} occured. Arguments:\n{1!r}".format(type(ex).__name__, ex.args))
         if skip_runerror:
             warn(link.info['messages'][-1] + '\n' + link_string_short)
@@ -188,7 +187,7 @@ def _link(params):
         link.info['success'] = True
         link.info['t_end'], link.info['t_stamp_end'] = time.strftime("%Y/%m/%d %H:%M:%S"), time.time()
         link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
-        if not searchlight:
+        if not searchlight and link.result:
             result = {k: v for k, v in link.result.items() if detailed_save or not k.startswith('forest_contrib')}
             db_dict = OrderedDict([('accuracy', result['accuracy']),
                                    ('accuracy_ste', result['accuracy_ste']),
