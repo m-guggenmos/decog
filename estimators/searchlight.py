@@ -70,7 +70,7 @@ class SearchLight(BaseEstimator):
 
     def __init__(self, mask_img, process_mask_img=None, radius=2.,
                  estimator='svc', estimator_params=None,
-                 n_jobs=1, scoring=None, cv=None,
+                 n_jobs=-1, scoring=None, cv=None,
                  verbose=0):
         self.mask_img = mask_img
         self.process_mask_img = process_mask_img
