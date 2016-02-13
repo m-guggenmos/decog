@@ -20,7 +20,7 @@ import nibabel
 
 from decereb.feature_selection import \
     MultiRoiVarianceThreshold, MuliRoiSelectPercentile, MultiRoiSelectFromModel, SelectRoisFromModel
-from decereb.util.cv import DummyCV
+from decereb.cv import DummyCV
 from .util.archiving import zip_directory_structure
 
 class Link:

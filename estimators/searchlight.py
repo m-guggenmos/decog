@@ -1,6 +1,7 @@
 from sklearn import svm
 from sklearn.base import BaseEstimator
 from sklearn import neighbors
+from sklearn.metrics import make_scorer
 from nilearn.decoding.searchlight import search_light
 from nilearn import masking
 import nibabel
@@ -160,3 +161,11 @@ class SearchLight(BaseEstimator):
     def predict(self, X):
 
         return nibabel.Nifti1Image(self.scores_, affine=self.affine)
+
+
+def accuracy_minus_chance_scorer(chance_level=0.5):
+
+    def score_func (y, y_pred):
+        return np.mean(np.array(y) == np.array(y_pred)) - chance_level
+
+    return make_scorer(score_func)
