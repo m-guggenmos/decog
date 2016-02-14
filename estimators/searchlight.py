@@ -8,6 +8,7 @@ import nibabel
 import numpy as np
 from nilearn.input_data import NiftiMasker
 from warnings import warn
+from functools import partial
 
 ESTIMATOR_CATALOG = dict(svc=svm.LinearSVC, svr=svm.SVR)
 
@@ -163,9 +164,13 @@ class SearchLight(BaseEstimator):
         return nibabel.Nifti1Image(self.scores_, affine=self.affine)
 
 
+# Note: the peculiar format of creating this scorer is necessary in order to be compatible with multiprocessing_on_dill
+
+def _accuracy_minus_chance_func(y, y_pred, chance_level=0.5):
+    return np.mean(np.array(y) == np.array(y_pred)) - chance_level
+
 def accuracy_minus_chance_scorer(chance_level=0.5):
+    func = partial(_accuracy_minus_chance_func, chance_level=chance_level)
+    func.__name__ = 'accuracy_minus_chance'
+    return make_scorer(func)
 
-    def score_func (y, y_pred):
-        return np.mean(np.array(y) == np.array(y_pred)) - chance_level
-
-    return make_scorer(score_func)

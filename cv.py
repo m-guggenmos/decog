@@ -1,26 +1,27 @@
 import numpy as np
 
 
-class XClassSplit:
+class XClassSplit():
 
-    def __init__(self, sets, runs):
-        self.sets = np.array(sets, dtype=np.int)
+    def __init__(self, runs, sets):
+        self.sets = np.atleast_2d(sets)
         self.runs = np.array(runs, dtype=np.int)
 
         self.unique_runs = np.unique(self.runs)
-        self.unique_sets = np.unique(self.sets)
-        self.n = len(self.unique_sets) * len(self.unique_runs)
+        self.unique_sets = np.atleast_2d([np.unique(s) for s in self.sets])
+        self.n = sum([len(s) * len(self.unique_runs) for s in self.unique_sets])
 
     def __iter__(self):
-        for set in self.unique_sets:
-            for run in self.unique_runs:
-                test_index = np.where((self.sets == set) & (self.runs == run))[0]
-                train_index = np.where((self.sets != set) & (self.runs != run))[0]
-                yield train_index, test_index
+
+        for s, set in enumerate(self.sets):
+            for set_id in self.unique_sets[s]:
+                for run in self.unique_runs:
+                    test_index = np.where((set == set_id) & (self.runs == run))[0]
+                    train_index = np.where((set != set_id) & (self.runs != run))[0]
+                    yield train_index, test_index
 
     def __len__(self):
         return self.n
-
 
 class DummyCV:
 
@@ -38,9 +39,9 @@ if __name__ == '__main__':
 
     y = np.array(['r1_A1', 'r1_A2', 'r1_B1', 'r1_B2','r2_A1', 'r2_A2', 'r2_B1', 'r2_B2','r3_A1', 'r3_A2', 'r3_B1', 'r3_B2'])
 
-    sets = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
+    sets = [[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], [0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0]]
     runs = [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2]
-    cv = XClassSplit(runs=runs, sets=sets)
+    cv = XClassSplit(runs, sets)
 
     for train, test in cv:
         print("TRAIN:", train, "TEST:", test)
