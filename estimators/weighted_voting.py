@@ -26,14 +26,14 @@ class WeightedVoting(BaseEstimator, ClassifierMixin):
         w = WEIGHTING_DICT[dist_weighting_]
         with warnings.catch_warnings():  # (1 / 2) we catch the warning about nans here
             warnings.simplefilter("ignore", RuntimeWarning)
-            statistic = w[0](X[np.array(y) == 1, :], X[np.array(y) == 2, :], **w[1]).statistic
+            statistic = w[0](X[np.array(y) == self.classes_[0], :], X[np.array(y) == self.classes_[1], :], **w[1]).statistic
         statistic[np.isnan(statistic)] = 0  # (2 / 2) and clean up the mess afterwards
         # self.feature_importances_ = np.atleast_1d(robust_scale(abs(statistic)[:, np.newaxis]).squeeze())
         self.feature_importances_ = np.atleast_1d(abs(statistic[:, np.newaxis]).squeeze())
 
         adict = {'median': np.median, 'mean': np.mean}
-        self.averages = np.vstack((adict[self.averaging](X[np.array(y) == 1, :], 0),
-                                   adict[self.averaging](X[np.array(y) == 2, :], 0)))
+        self.averages = np.vstack((adict[self.averaging](X[np.array(y) == self.classes_[0], :], 0),
+                                   adict[self.averaging](X[np.array(y) == self.classes_[1], :], 0)))
 
         return self
 

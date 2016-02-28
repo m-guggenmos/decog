@@ -6,9 +6,11 @@ from nilearn.decoding.searchlight import search_light
 from nilearn import masking
 import nibabel
 import numpy as np
+from scipy.stats import pearsonr
 from nilearn.input_data import NiftiMasker
 from warnings import warn
 from functools import partial
+import warnings
 
 ESTIMATOR_CATALOG = dict(svc=svm.LinearSVC, svr=svm.SVR)
 
@@ -173,4 +175,13 @@ def accuracy_minus_chance_scorer(chance_level=0.5):
     func = partial(_accuracy_minus_chance_func, chance_level=chance_level)
     func.__name__ = 'accuracy_minus_chance'
     return make_scorer(func)
+
+def _pearson_func(y, y_pred):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        result = pearsonr(y, y_pred)[0]
+    return result
+
+def pearson_scorer():
+    return make_scorer(_pearson_func)
 
