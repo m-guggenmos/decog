@@ -37,7 +37,7 @@ class Analysis:
 
         self.n_channels = len(self.scheme.data)
         self.is_multichannel = self.n_channels > 1
-        self.searchlight = self.scheme.channels[0].clf.searchlight
+        self.searchlight = self.scheme.channels[0].clf._searchlight
 
         self.n_folds = None
         self.cv_outer = None

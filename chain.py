@@ -6,10 +6,98 @@ import multiprocessing_on_dill as multiprocessing
 import json
 from warnings import warn
 import nibabel
+from sklearn.svm import SVC
 
 from .util.archiving import zip_directory_structure
 from .analysis import Analysis
-from .descriptor import DescriptorConcatenator, Data
+from .descriptor import DescriptorConcatenator, Data, ClassifierDescriptor, \
+    FeatureSelectionDescriptor, SchemeDescriptor, Channel
+
+
+class SimpleChain:
+
+    def __init__(self, data, clf=SVC, clf_args=None, fs=None, fs_args=None, labels=None):
+
+        """ Simple interface to start analyses.
+
+        Parameters
+        ----------
+        data : List<NiftiImages>, np.ndarray, decereb.descriptor.data
+        clf : classifier class, decereb.descriptor.ClassifierDescriptor
+        clf_args : dict, None
+            Arguments passed to the classifier
+        fs : None, str, decereb.descriptor.FeatureSelectionDescriptor
+        fs_args : dict, None
+            Arguments passed to the feature selection
+        labels : list of labels
+            only necessary if type(data) != decereb.descriptor.data
+        """
+        self.labels = labels
+        self.data = data
+        self.clf_args = clf_args
+        self.clf = clf
+        self.fs_args = fs_args
+        self.fs = fs
+
+        Channel.init_channel(clfs=self.clf, fss=self.fs)
+        channel = Channel(clf_names=[self.clf.name], fs_names=[self.fs.name])
+
+        scheme = SchemeDescriptor(name=self.data.name, data=self.data, channels=channel)
+
+        ChainBuilder.init_chain_builder(schemes=scheme)
+        self.chain = ChainBuilder(scheme_names=self.data.name).build_chain()
+
+    @property
+    def data(self):
+        return self._data
+
+    @data.setter
+    def data(self, value):
+        if isinstance(value, Data):
+            self._data = value
+        else:
+            if self.labels is None:
+                raise ValueError('No labels have been provided!')
+            self._data = Data(value, self.labels)
+
+    @property
+    def clf(self):
+        return self._clf
+
+    @clf.setter
+    def clf(self, value):
+        if isinstance(value, ClassifierDescriptor):
+            self._clf = value
+        else:
+            self._clf = ClassifierDescriptor(clf=value, clf_args=self.clf_args)
+
+    @property
+    def clf_args(self):
+        return self._clf_args
+
+    @clf_args.setter
+    def clf_args(self, value):
+        if value is None:
+            self._clf_args = dict()
+        else:
+            self._clf_args = value
+
+    @property
+    def fs(self):
+        return self._fs
+
+    @fs.setter
+    def fs(self, value):
+        if isinstance(value, FeatureSelectionDescriptor):
+            self._fs = value
+        else:
+            self._fs = FeatureSelectionDescriptor(name=value, fs_args=self.fs_args)
+
+    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=1,
+            output_path='/tmp/decereb/', skip_ioerror=False, skip_runerror=False,
+            detailed_save=True):
+        return self.chain.run(n_jobs_links, n_jobs_folds, verbose, output_path, skip_ioerror,
+                              skip_runerror, detailed_save)
 
 
 class Link:
@@ -81,9 +169,8 @@ class Chain:
         """
         self.link_list = link_list
 
-    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=2, seed=0, output_path=None,
-            recompute=False, skip_runerror=True, skip_ioerror=False, zip_code_dirs=None,
-            detailed_save=False):
+    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=2, output_path=None, recompute=False,
+            skip_runerror=True, skip_ioerror=False, zip_code_dirs=None, detailed_save=False):
         """ Start the analyses chain
         Parameters
         ----------
@@ -93,8 +180,6 @@ class Chain:
             number of parallell jobs for folds
         verbose: int
             verbosity level
-        seed : int, None [TODO]
-            seed for random number generator (None = no seed is used)
         output_path : str, None
             directoy in which results are saved as pickle files OR
             path to existent database OR
@@ -118,7 +203,7 @@ class Chain:
         if n_jobs_links > 1 and n_jobs_folds > 1:
             raise Exception('You cannot set both n_jobs_chain and n_jobs_folds > 1.')
 
-        if not self.link_list[0].scheme.channels[0].clf.searchlight:
+        if not self.link_list[0].scheme.channels[0].clf._searchlight:
             if output_path is None:
                 db_string = 'sqlite:///:memory:'
                 output_dir = '/tmp/'
@@ -154,14 +239,14 @@ class Chain:
         if n_jobs_links == 1:
             chain = []
             for link_id, link in enumerate(self.link_list):
-                params = (n_jobs_folds, verbose, seed, link_id, len(self.link_list),
+                params = (n_jobs_folds, verbose, link_id, len(self.link_list),
                           link, skip_runerror, skip_ioerror, db_string, lockfile, output_path,
                           timestamp, detailed_save)
                 link = _link(params)
                 chain.append(link)
         else:
             pool = multiprocessing.Pool(None if n_jobs_links == -1 else n_jobs_links)
-            params = [(n_jobs_folds, verbose, seed, link_id, len(self.link_list),
+            params = [(n_jobs_folds, verbose, link_id, len(self.link_list),
                        link, skip_runerror, skip_ioerror, db_string, lockfile, output_path,
                        timestamp, detailed_save)
                       for link_id, link in enumerate(self.link_list)]
@@ -191,10 +276,10 @@ def _link(params):
         processed Link
 
     """
-    n_jobs_folds, verbose, seed, link_id, chain_len, link, skip_runerror, \
+    n_jobs_folds, verbose, link_id, chain_len, link, skip_runerror, \
         skip_ioerror, db_string, lockfile, output_path, timestamp, detailed_save = params
 
-    searchlight = link.scheme.channels[0].clf.searchlight
+    searchlight = link.scheme.channels[0].clf._searchlight
 
     link_string = "Running chain link %g / %g %s\n%s" % \
                   (link_id + 1, chain_len, db_string, link.description_str)
@@ -257,7 +342,10 @@ def _link(params):
                 total_time += 0.1
                 if total_time > 100:
                     raise IOError("Timeout reached for lock file\n" + link_string)
-            open(lockfile, 'a').close()
+            if os.path.exists(os.path.dirname(lockfile)):
+                open(lockfile, 'a').close()
+            else:
+                os.mkdir(os.path.dirname(lockfile))
             try:
                 connect(db_string)['chain'].insert(db_dict)
             except Exception:

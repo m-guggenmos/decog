@@ -1,7 +1,6 @@
 from sklearn.base import BaseEstimator
 from sklearn.feature_selection.base import SelectorMixin
 from sklearn.utils import safe_mask
-from sklearn.utils.validation import check_is_fitted
 from warnings import warn
 import numpy as np
 from decereb.estimators import RoiEnsemble
