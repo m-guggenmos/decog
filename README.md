@@ -3,8 +3,7 @@ High-level interface for sklearn, targeted at neuroimaging data analysis. Not ev
 
 Example:
 
----------------- begin code snippet ----------------
-
+```python
 from sklearn.svm import SVC
 from decereb.chain import SimpleChain
 from sklearn.datasets import make_classification
@@ -33,5 +32,4 @@ analysis = SimpleChain(data=X, clf=clf, clf_args=clf_args, fs=fs, fs_args=fs_arg
 result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decereb/',
                       skip_ioerror=False, skip_runerror=False, detailed_save=True)
 print('Finished example!')
-
------------------ end code snippet -----------------
+```
