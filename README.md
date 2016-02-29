@@ -29,7 +29,24 @@ fs = 'variance'
 fs_args = dict(threshold=[0.01, 0.1])
 
 analysis = SimpleChain(data=X, clf=clf, clf_args=clf_args, fs=fs, fs_args=fs_args, labels=y)
+
+
+# n_jobs_links:  distribute different analyses across n_jobs_links processors
+# n_jobs_folds:  distribute cross-validation folds of each analysis across n_jobs_folds processors
+# verbose:       increase two view more detailed results (e.g. fold-wise results)
+# output_path:   directory to store the result
+# skip_ioerror:  set True if the analysis chain should continue despite an I/O error when saving the,
+#                previous result
+# skip_runerror: set True if the analysis chain should continue despite any runtime error in the
+#                previous analysis
+# detailed_save: save more detailed results (currently undocumented)
+
+
 result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decereb/',
                       skip_ioerror=False, skip_runerror=False, detailed_save=True)
+
 print('Finished example!')
+
+# Decereb results are stored in a simple SQL-based database (https://dataset.readthedocs.org/),
+# which allows easy querying of the results (e.g. SELECT * FROM chain ORDER BY roc_auc_scores)
 ```
