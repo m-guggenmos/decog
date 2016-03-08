@@ -1,7 +1,7 @@
 # decereb
 High-level interface for sklearn / nilearn, targeted at neuroimaging data analysis. Not even alpha at the moment -- the API is expected to change on a daily basis.
 
-Simple example:
+**Simple example:**
 
 ```python
 from sklearn.svm import SVC
@@ -51,7 +51,7 @@ print('Finished example!')
 ```
 
 
-Advanced example:
+**Advanced example:**
 
 ```python
 from sklearn.svm import SVC
@@ -104,7 +104,7 @@ result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/t
 print('Finished example!')
 ```
 
-Example for a searchlight analysis:
+**Example for a searchlight analysis:**
 
 ```python
 import os
