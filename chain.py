@@ -1,4 +1,4 @@
-from collections import OrderedDict, Sequence
+from collections import OrderedDict
 import time
 from dataset import connect
 import os
@@ -7,6 +7,7 @@ import json
 from warnings import warn
 import nibabel
 from sklearn.svm import SVC
+import numpy as np
 
 from .util.archiving import zip_directory_structure
 from .analysis import Analysis
@@ -23,15 +24,16 @@ class SimpleChain:
         Parameters
         ----------
         data : List<NiftiImages>, np.ndarray, decereb.descriptor.data
-        clf : classifier class, decereb.descriptor.ClassifierDescriptor
-        clf_args : dict, None
+        clf : sklearn type classifier class, decereb.descriptor.ClassifierDescriptor
+        clf_args : None, dict
             Arguments passed to the classifier
         fs : None, str, decereb.descriptor.FeatureSelectionDescriptor
-        fs_args : dict, None
+        fs_args : None, dict
             Arguments passed to the feature selection
-        labels : list of labels
+        labels : List<int, str>
             only necessary if type(data) != decereb.descriptor.data
         """
+
         self.labels = labels
         self.data = data
         self.clf_args = clf_args
@@ -39,13 +41,7 @@ class SimpleChain:
         self.fs_args = fs_args
         self.fs = fs
 
-        Channel.init_channel(clfs=self.clf, fss=self.fs)
-        channel = Channel(clf_names=[self.clf.name], fs_names=[self.fs.name])
-
-        scheme = SchemeDescriptor(name=self.data.name, data=self.data, channels=channel)
-
-        ChainBuilder.init_chain_builder(schemes=scheme)
-        self.chain = ChainBuilder(scheme_names=self.data.name).build_chain()
+        self._build_chain()
 
     @property
     def data(self):
@@ -59,6 +55,8 @@ class SimpleChain:
             if self.labels is None:
                 raise ValueError('No labels have been provided!')
             self._data = Data(value, self.labels)
+        if hasattr(self, 'chain'):
+            self._build_chain()
 
     @property
     def clf(self):
@@ -70,6 +68,8 @@ class SimpleChain:
             self._clf = value
         else:
             self._clf = ClassifierDescriptor(clf=value, clf_args=self.clf_args)
+        if hasattr(self, 'chain'):
+            self._build_chain()
 
     @property
     def clf_args(self):
@@ -81,6 +81,8 @@ class SimpleChain:
             self._clf_args = dict()
         else:
             self._clf_args = value
+        if hasattr(self, 'chain'):
+            self._build_chain()
 
     @property
     def fs(self):
@@ -92,6 +94,8 @@ class SimpleChain:
             self._fs = value
         else:
             self._fs = FeatureSelectionDescriptor(name=value, fs_args=self.fs_args)
+        if hasattr(self, 'chain'):
+            self._build_chain()
 
     def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=1,
             output_path='/tmp/decereb/', skip_ioerror=False, skip_runerror=False,
@@ -99,6 +103,10 @@ class SimpleChain:
         return self.chain.run(n_jobs_links, n_jobs_folds, verbose, output_path, skip_ioerror,
                               skip_runerror, detailed_save)
 
+    def _build_chain(self):
+        self.channel = Channel(clfs=self.clf, fss=self.fs)
+        self.scheme = SchemeDescriptor(name=self.data.name, data=self.data, channels=self.channel)
+        self.chain = ChainBuilder(schemes=self.scheme).build_chain()
 
 class Link:
 
@@ -138,11 +146,11 @@ class Link:
 
         scheme_descrip = list(self.scheme.identifier.items())
         clf_descrip = [[('%s%s' % (prefix(c, is_multichannel), k), v)
-                        for k, v in channel.clf.identifier.items()]
+                        for k, v in channel.clfs.identifier.items()]
                        for c, channel in enumerate(self.scheme.channels)]
         fs_descrip = [[[('%s%s' % (prefix(c, is_multichannel), k), v)
-                        for k, v in fs.identifier.items()] for fs in channel.fs]
-                      if channel.fs is not None
+                        for k, v in fs.identifier.items()] for fs in channel.fss]
+                      if channel.fss is not None
                       else [[('%s%s' % (prefix(c, is_multichannel), 'fs_name'), None)]]
                       for c, channel in enumerate(self.scheme.channels)]
         self.description = OrderedDict(
@@ -203,7 +211,7 @@ class Chain:
         if n_jobs_links > 1 and n_jobs_folds > 1:
             raise Exception('You cannot set both n_jobs_chain and n_jobs_folds > 1.')
 
-        if not self.link_list[0].scheme.channels[0].clf._searchlight:
+        if not self.link_list[0].scheme.channels[0].clfs._searchlight:
             if output_path is None:
                 db_string = 'sqlite:///:memory:'
                 output_dir = '/tmp/'
@@ -279,7 +287,7 @@ def _link(params):
     n_jobs_folds, verbose, link_id, chain_len, link, skip_runerror, \
         skip_ioerror, db_string, lockfile, output_path, timestamp, detailed_save = params
 
-    searchlight = link.scheme.channels[0].clf._searchlight
+    searchlight = link.scheme.channels[0].clfs._searchlight
 
     link_string = "Running chain link %g / %g %s\n%s" % \
                   (link_id + 1, chain_len, db_string, link.description_str)
@@ -320,20 +328,31 @@ def _link(params):
                       any([k.startswith(e) for e in detailed_items])}
             messages = ", ".join(["[" + m + "]" for m in link.info['messages']]) \
                 if detailed_save else None
-            description_optional = json.dumps(link.description_optional) if detailed_save else None
-            db_dict = OrderedDict([('scoring', result['scoring']),
-                                   ('scoring_ste', result['scoring_ste']),
-                                   ('proc_time', link.info['t_dur']),
-                                   ('result', json.dumps(result)),
-                                   ('t_start', link.info['t_start']),
-                                   ('t_end', link.info['t_end']),
-                                   ('info', description_optional),
-                                   ('timestamp_start', link.info['t_stamp_start']),
-                                   ('timestamp_end', link.info['t_stamp_end']),
-                                   ('success', link.info['success']),
-                                   ('messages', messages)
-                                   ] +
-                                  list(link.description.items()))
+            if detailed_save:
+                for k, v in link.description_optional.items():
+                    if isinstance(v, np.ndarray):
+                        link.description_optional[k] = v.tolist()
+                description_optional = json.dumps(link.description_optional) if detailed_save else None
+                db_dict = OrderedDict([('scoring', result['scoring']),
+                                       ('scoring_ste', result['scoring_ste']),
+                                       ('proc_time', link.info['t_dur']),
+                                       ('result', json.dumps(result)),
+                                       ('t_start', link.info['t_start']),
+                                       ('t_end', link.info['t_end']),
+                                       ('info', description_optional),
+                                       ('timestamp_start', link.info['t_stamp_start']),
+                                       ('timestamp_end', link.info['t_stamp_end']),
+                                       ('success', link.info['success']),
+                                       ('messages', messages)
+                                       ] +
+                                      list(link.description.items()))
+            else:
+                db_dict = OrderedDict([('scoring', result['scoring']),
+                                       ('scoring_ste', result['scoring_ste']),
+                                       ('proc_time', link.info['t_dur']),
+                                       ('t_end', link.info['t_end']),
+                                       ] +
+                                      list(link.description.items()))
     if not searchlight:
         try:
             total_time = 0
@@ -356,13 +375,30 @@ def _link(params):
             if skip_ioerror:
                 warning_ = "An exception of type {0} occured. Arguments:\n{1!r}\n".\
                     format(type(ex).__name__, ex.args)
-                warn(warning_ +  + link_string_short)
+                warn(warning_ + link_string_short)
             else:
                 print('[IOErr] ' + link_string_short)
                 raise  # re-raise
         finally:
             if os.path.exists(lockfile):
                 os.remove(lockfile)
+
+        # total_time = 0
+        # while os.path.exists(lockfile):
+        #     time.sleep(0.1)
+        #     total_time += 0.1
+        #     if total_time > 100:
+        #         raise IOError("Timeout reached for lock file\n" + link_string)
+        # if os.path.exists(os.path.dirname(lockfile)):
+        #     open(lockfile, 'a').close()
+        # else:
+        #     os.mkdir(os.path.dirname(lockfile))
+        # connect(db_string)['chain'].insert(db_dict)
+        #
+        # if os.path.exists(lockfile):
+        #     os.remove(lockfile)
+
+
     else:  # searchlight
         for k, img in link.result.items():
             path, ext = os.path.splitext(output_path)
@@ -382,17 +418,40 @@ def _link(params):
 
 class ChainBuilder(object):
 
-    schemes = None
+    scheme_pool = None
 
-    def __init__(self, scheme_names=None):
+    def __init__(self, schemes=None):
 
-        """ Helper to build a decereb.chain.Chain from a (list of )scheme name(s)
+        """ Helper to build a decereb.chain.Chain from a (list of ) scheme(s) or scheme name(s)
 
         Parameters
         ----------
-        scheme_names : str, List<str>
+        schemes : str, List<str>, decereb.descriptor.SchemeDescriptor,
+                  List<decereb.descriptor.SchemeDescriptor>
         """
-        self.scheme_names = scheme_names
+        self.schemes = schemes
+
+    @property
+    def schemes(self):
+        return self._schemes
+
+    @schemes.setter
+    def schemes(self, value):
+        if not isinstance(value, (list, tuple)):
+            value = [value]
+        if isinstance(value[0], SchemeDescriptor):
+            self.scheme_pool = value
+            self._schemes = [v.name for v in value]
+        elif isinstance(value[0], str):
+            if self.scheme_pool is None:
+                raise ValueError('Selection by name requires prior initialization of the scheme '
+                                 'pool.')
+            else:
+                self._schemes = value
+        else:
+            raise ValueError("Parameter 'schemes' must be one of the following: str, List<str>, "
+                             "decereb.descriptor.SchemeDescriptor or "
+                             "List<decereb.descriptor.SchemeDescriptor>")
 
     def build_chain(self, select_indices=None):
 
@@ -408,12 +467,12 @@ class ChainBuilder(object):
         chain : decereb.chain.Chain
 
         """
-        selected_schemes = list(DescriptorConcatenator(descriptor_list=self.schemes,
-                                                       base_names=self.scheme_names))
+        selected_schemes = list(DescriptorConcatenator(descriptor_list=self.scheme_pool,
+                                                       base_names=self.schemes))
 
         if select_indices is None:
             select_indices = range(len(selected_schemes))
-        elif not isinstance(select_indices, Sequence):
+        elif not isinstance(select_indices, (list, tuple)):
             select_indices = [select_indices]
 
         link_list = []
@@ -426,4 +485,4 @@ class ChainBuilder(object):
 
     @staticmethod
     def init_chain_builder(schemes):
-        ChainBuilder.schemes = schemes
+        ChainBuilder.scheme_pool = schemes

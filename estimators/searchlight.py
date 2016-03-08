@@ -16,7 +16,10 @@ ESTIMATOR_CATALOG = dict(svc=svm.LinearSVC, svr=svm.SVR)
 
 
 class SearchLight(BaseEstimator):
-    """Implement search_light analysis using an arbitrary type of classifier.
+    """ Note: this is an almost-clone of nilearn's searchlight algorithm, so all credit goes to
+     them!
+
+    Implement search_light analysis using an arbitrary type of classifier.
 
     Parameters
     -----------
@@ -80,15 +83,23 @@ class SearchLight(BaseEstimator):
         self.process_mask_img = process_mask_img
         self.radius = radius
         self.estimator = estimator
-        if estimator_params is None:
-            self.estimator_params = dict()
-        else:
-            self.estimator_params = estimator_params
+        self.estimator_params = estimator_params
         self.n_jobs = n_jobs
         self.scoring = scoring
         self.cv = cv
         self.verbose = verbose
         self.affine = None
+
+    @property
+    def estimator_params(self):
+        return self._estimator_params
+
+    @estimator_params.setter
+    def estimator_params(self, value):
+        if value is None:
+            self._estimator_params = dict()
+        else:
+            self._estimator_params = value
 
     def fit(self, imgs, y):
         """Fit the searchlight
@@ -162,25 +173,28 @@ class SearchLight(BaseEstimator):
         return self
 
     def predict(self, X):
-
         return nibabel.Nifti1Image(self.scores_, affine=self.affine)
 
 
-# Note: the peculiar format of creating this scorer is necessary in order to be compatible with multiprocessing_on_dill
+# Note: the peculiar format of creating these scorers is necessary in order to be compatible with
+# multiprocessing_on_dill
 
 def _accuracy_minus_chance_func(y, y_pred, chance_level=0.5):
     return np.mean(np.array(y) == np.array(y_pred)) - chance_level
+
 
 def accuracy_minus_chance_scorer(chance_level=0.5):
     func = partial(_accuracy_minus_chance_func, chance_level=chance_level)
     func.__name__ = 'accuracy_minus_chance'
     return make_scorer(func)
 
+
 def _pearson_func(y, y_pred):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         result = pearsonr(y, y_pred)[0]
     return result
+
 
 def pearson_scorer():
     return make_scorer(_pearson_func)

@@ -4,24 +4,27 @@ from nilearn import _utils
 from nilearn.image import smooth_img, resample_img
 import numpy as np
 from nibabel import Nifti1Image, load
-from collections import OrderedDict, Sequence
 import os
+import warnings
 
 FDICT = dict(mean=(np.mean, dict(axis=1)), max=(np.max, dict(axis=1)))
 
 
 class MultiRoiMasker(BaseMasker):
-    def __init__(self, mask_img=None, rois=None, smoothing_fwhm=None, resampling=None, combine_rois=False,
-                 searchlight=False):
+    def __init__(self, mask_img=None, rois=None, smoothing_fwhm=None, resampling=None,
+                 normalize=False, combine_rois=False, searchlight=False):
 
         self.mask_img = mask_img
         if not rois:
             raise Exception('MultiRoiMasker requires at least one ROI!')
-        elif not isinstance(rois, Sequence):
+        elif not isinstance(rois, (list, tuple)):
             rois = [rois]
+        if normalize and searchlight:
+            raise ValueError("Combination searchlight=True and normalize=True currently not supported!")
         self.rois = rois
         self.smoothing_fwhm = smoothing_fwhm
         self.resampling = resampling
+        self.normalize = normalize
         self.combine_rois = combine_rois
         self.searchlight = searchlight
 
@@ -70,30 +73,34 @@ class MultiRoiMasker(BaseMasker):
 
         if self.combine_rois:
             if not self.searchlight:
-                return {0: np.concatenate([masker.transform(X) for masker in self.masker.values()], axis=1)}
+                data = {0: np.concatenate([masker.transform(X) for masker in self.masker.values()], axis=1)}
+                if self.normalize:
+                    data = {0: np.array([d - np.mean(d) for d in data[0]])}
             else:
-#                 ValueError("""Illegal combination of searchlight=True and combine_rois=True: if searchlight should be
-# applied to multiple combined ROIs, combine the ROIs first and supply them as a single processing mask.
-# MultiRoiMasker is the wrong place in this case!""")
-                return {0: ([self.masker[0].transform(x) for x in X],
+                data = {0: ([self.masker[0].transform(x) for x in X],
                             Nifti1Image(np.sum([load(roi).get_data() for roi in self.rois], axis=0), affine=affine))}
-                    # [Nifti1Image(np.sum([np.reshape(masker.transform(x), shape) for masker in self.masker.values()], axis=0), affine=affine)
-                    #     for x in X]
         else:
             if not self.searchlight:
                 if not isinstance(self.masker, tuple):
-                    return {k: masker.transform(X) for k, masker in self.masker.items()}
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        data = {k: masker.transform(X) for k, masker in self.masker.items()}
+                        if self.normalize:
+                            data = {k: np.array([d-np.mean(d) for d in v]) for k, v in data.items()}
                 else:
                     data = dict()
                     c = 0
                     for m, modality in enumerate(self.masker):
                         X_m = [x[m] for x in X]
                         for k, masker in modality.items():
-                            data.update({c: masker.transform(X_m)})
+                            data_ = masker.transform(X_m)
+                            if self.normalize:
+                                data_ = np.array([d - np.mean(d) for d in data_])
+                            data.update({c: data_})
                             c += 1
-                    return data
             else:
-                return {k: (masker.transform(X), self.rois[k]) for k, masker in self.masker.items()}
+                data = {k: (masker.transform(X), self.rois[k]) for k, masker in self.masker.items()}
+        return data
 
     def preprocess(self, imgs):
 
@@ -108,7 +115,7 @@ class MultiRoiMasker(BaseMasker):
         path_first_resampled = os.path.join(os.path.dirname(path_first), resample_prefix + os.path.basename(path_first))
         path_first_smoothed = os.path.join(os.path.dirname(path_first), smooth_prefix + resample_prefix + os.path.basename(path_first))
 
-        if self.resampling is not None and self.smoothing_fwhm is not None:
+        if self.resampling is not None or self.smoothing_fwhm is not None:
             if self.resampling is not None and not os.path.exists(path_first_smoothed):
                 if not os.path.exists(path_first_resampled):
                     imgs = resample_img(imgs, target_affine=np.diag(self.resampling * np.ones(3)))

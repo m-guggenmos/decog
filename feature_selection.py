@@ -1,6 +1,7 @@
 from sklearn.base import BaseEstimator
 from sklearn.feature_selection.base import SelectorMixin
-from sklearn.utils import safe_mask
+from sklearn.utils import safe_mask, check_array
+from sklearn.utils.sparsefuncs import mean_variance_axis
 from warnings import warn
 import numpy as np
 from decereb.estimators import RoiEnsemble
@@ -102,6 +103,90 @@ class MultiRoiVarianceThreshold(BaseEstimator, SelectorMixin):
     def _get_support_mask(self):
 
         support_masks = {k: v > self.threshold for k, v in self.variances_.items()}
+
+        return support_masks
+
+
+class MultiRoiVariancePercentile(BaseEstimator, SelectorMixin):
+    """Feature selector that removes all low-variance features.
+
+    This feature selection algorithm looks only at the features (X), not the
+    desired outputs (y), and can thus be used for unsupervised learning.
+
+    Read more in the :ref:`User Guide <variance_threshold>`.
+
+    Parameters
+    ----------
+    threshold : float, optional
+        Features with a training-set variance lower than this threshold will
+        be removed. The default is to keep all features with non-zero variance,
+        i.e. remove the features that have the same value in all samples.
+
+    Attributes
+    ----------
+    variances_ : array, shape (n_features,)
+        Variances of individual features.
+    """
+
+    def __init__(self, threshold=0., allow_empty_roi=True):
+        self.threshold = threshold
+        self.allow_empty_roi = allow_empty_roi
+
+    def fit(self, X, y=None):
+        """Learn empirical variances from X.
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix}, shape (n_samples, n_features)
+            Sample vectors from which to compute variances.
+
+        y : any
+            Ignored. This parameter exists only for compatibility with
+            sklearn.pipeline.Pipeline.
+
+        Returns
+        -------
+        self
+        """
+        if not isinstance(X, dict):
+            raise ValueError('X must be a dict')
+
+        self.variances_ = {k: np.var(x, axis=0) for k, x in X.items()}
+
+        # for i, var in enumerate(self.variances_):
+        #     if np.all(var <= self.threshold):
+        #         msg = "No feature in roi %g meets the variance threshold {0:.5f}" % i
+        #         if X[i].shape[0] == 1:
+        #             msg += " (roi contains only one sample)"
+        #         raise ValueError(msg.format(self.threshold))
+
+        return self
+
+    def transform(self, X):
+        """Reduce X to the selected features.
+
+        Parameters
+        ----------
+        X : array of shape [n_samples, n_features]
+            The input samples.
+
+        Returns
+        -------
+        X_r : array of shape [n_samples, n_selected_features]
+            The input samples with only the selected features.
+        """
+        masks = self.get_support()
+        X_r = dict()
+        for roi_id in self.variances_.keys():
+            mask = masks[roi_id]
+            if len(mask) != X[roi_id].shape[1]:
+                raise ValueError("Roi %g has a different shape than during fitting." % roi_id)
+            X_r[roi_id] = X[roi_id][:, safe_mask(X[roi_id], mask)]
+        return X_r
+
+    def _get_support_mask(self):
+
+        support_masks = {k: v > np.percentile(v, self.threshold) for k, v in self.variances_.items()}
 
         return support_masks
 
@@ -591,3 +676,72 @@ class SelectRoisFromModel(BaseEstimator, SelectorMixin):
     #         if self.criterion is None:
     #             return list(self.estimator_.keys())
     #         else:
+
+
+
+
+class VariancePercentile(BaseEstimator, SelectorMixin):
+    """Feature selector that removes all low-variance features.
+
+    This feature selection algorithm looks only at the features (X), not the
+    desired outputs (y), and can thus be used for unsupervised learning.
+
+    Read more in the :ref:`User Guide <variance_threshold>`.
+
+    Parameters
+    ----------
+    threshold : float, optional
+        Features with a training-set variance lower than this threshold will
+        be removed. The default is to keep all features with non-zero variance,
+        i.e. remove the features that have the same value in all samples.
+
+    Attributes
+    ----------
+    variances_ : array, shape (n_features,)
+        Variances of individual features.
+
+    Examples
+    --------
+    The following dataset has integer features, two of which are the same
+    in every sample. These are removed with the default setting for threshold::
+
+        >>> X = [[0, 2, 0, 3], [0, 1, 4, 3], [0, 1, 1, 3]]
+        >>> selector = VarianceThreshold()
+        >>> selector.fit_transform(X)
+        array([[2, 0],
+               [1, 4],
+               [1, 1]])
+    """
+
+    def __init__(self, threshold=0.):
+        self.threshold = threshold
+
+    def fit(self, X, y=None):
+        """Learn empirical variances from X.
+
+        Parameters
+        ----------
+        X : {array-like, sparse matrix}, shape (n_samples, n_features)
+            Sample vectors from which to compute variances.
+
+        y : any
+            Ignored. This parameter exists only for compatibility with
+            sklearn.pipeline.Pipeline.
+
+        Returns
+        -------
+        self
+        """
+        X = check_array(X, ('csr', 'csc'), dtype=np.float64)
+
+        if hasattr(X, "toarray"):   # sparse matrix
+            _, self.variances_ = mean_variance_axis(X, axis=0)
+        else:
+            self.variances_ = np.var(X, axis=0)
+
+        return self
+
+    def _get_support_mask(self):
+        check_is_fitted(self, 'variances_')
+        support_mask = self.variances_ > np.percentile(self.variances_, self.threshold)
+        return support_mask
