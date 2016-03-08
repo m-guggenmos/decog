@@ -100,7 +100,10 @@ processing_schemes = [
 analysis = ChainBuilder(schemes=processing_schemes).build_chain()
 
 # And run..
-# In this example the chain contains 16 different analyses ('links').
+# In this example the chain contains 16 different analyses ('links'):
+# 2 different data sets x 2 different feature selections x 4 different classifiers (SVC,
+# RandomForest with gini, RandomForest with entropy, LDA).
+# Increase the n_jobs_links variable below, to distribute these links on different processors.
 result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decereb/',
                       skip_ioerror=False, skip_runerror=False, detailed_save=True)
 print('Finished example!')
