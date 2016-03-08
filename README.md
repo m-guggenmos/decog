@@ -64,11 +64,11 @@ from sklearn.datasets import make_classification
 # Using a slightly more verbose syntax, we can concatenate permutations of analyses using
 # (1) different data, (2) different classifiers and (3) different feature selections.
 
-# first we create two different data sets
+# First we create two different data sets
 X1, y1 = make_classification()
 X2, y2 = make_classification()
 
-# now we setup a list with three different classifiers by using the ClassifierDescriptor class
+# Now we setup a list with three different classifiers by using the ClassifierDescriptor class
 clf_args_SVC = dict(kernel='linear', C=[[0.1, 1]])
 clf_args_RF = dict(criterion=['entropy', 'gini'], n_estimators=128)
 clfs = [
@@ -77,18 +77,18 @@ clfs = [
     ClassifierDescriptor(name='LDA', clf=LinearDiscriminantAnalysis)
 ]
 
-# dito for different feature selections
+# Dito for different feature selections
 fss = [
     FeatureSelectionDescriptor(name='nested', fs_args=dict(model='nested', threshold='median')),
     FeatureSelectionDescriptor(name='variance', fs_args=dict(threshold=0.01))
 ]
 
-# a 'channel' specifies a (permutational) processing pipeline consisting of feature selections and
+# A 'channel' specifies a (permutational) processing pipeline consisting of feature selections and
 # classifiers
 channel = Channel(fss=fss, clfs=clfs)
 
-# the (processing) scheme descriptor glues together the data input and processing pipeline. The
-# scoring argument allows passing of different performance evaluation metrics (see sklearn.metrics).
+# The (processing) scheme descriptor glues together the data input and processing pipeline. The
+# scoring argument allows passing of performance evaluation metric (see sklearn.metrics).
 processing_schemes = [
     SchemeDescriptor(name='data_v1', data=Data(X1, y1), channels=channel, scoring='roc_auc'),
     SchemeDescriptor(name='data_v2', data=Data(X2, y2), channels=channel, scoring='roc_auc')
