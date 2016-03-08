@@ -74,7 +74,7 @@ X2, y2 = make_classification()
 clf_args_SVC = dict(kernel='linear', C=[[0.1, 1]])
 clf_args_RF = dict(criterion=['entropy', 'gini'], n_estimators=128)
 clfs = [
-    ClassifierDescriptor(name='SVC_rbf', clf=SVC, clf_args=clf_args_SVC),
+    ClassifierDescriptor(name='SVC', clf=SVC, clf_args=clf_args_SVC),
     ClassifierDescriptor(name='RF', clf=RandomForestClassifier, clf_args=clf_args_RF),
     ClassifierDescriptor(name='LDA', clf=LinearDiscriminantAnalysis)
 ]
