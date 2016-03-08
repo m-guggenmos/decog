@@ -69,6 +69,8 @@ X1, y1 = make_classification()
 X2, y2 = make_classification()
 
 # Now we setup a list with three different classifiers by using the ClassifierDescriptor class.
+# Please note that still all requested permutations for the parameters of each classifier are
+# expanded (see simple example).
 clf_args_SVC = dict(kernel='linear', C=[[0.1, 1]])
 clf_args_RF = dict(criterion=['entropy', 'gini'], n_estimators=128)
 clfs = [
@@ -88,7 +90,7 @@ fss = [
 channel = Channel(fss=fss, clfs=clfs)
 
 # The (processing) scheme descriptor glues together the data input and processing pipeline. The
-# scoring argument allows passing of performance evaluation metric (see sklearn.metrics).
+# scoring argument allows passing of a performance evaluation metric (see sklearn.metrics).
 processing_schemes = [
     SchemeDescriptor(name='data_v1', data=Data(X1, y1), channels=channel, scoring='roc_auc'),
     SchemeDescriptor(name='data_v2', data=Data(X2, y2), channels=channel, scoring='roc_auc')
