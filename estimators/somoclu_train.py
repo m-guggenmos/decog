@@ -240,7 +240,7 @@ class Somoclu(object):
         for i in dimensions:
             self._view_matrix(self.codebook[:, :, i], figsize, colormap,
                               colorbar, bestmatches, bestmatchcolors, labels,
-                              zoom, filename)
+                              zoom, filename, title='Component plane %g' % i)
 
     def view_continuous_labels(self, figsize=None, colormap=cm.Spectral_r,
                                colorbar=False, bestmatches=False, bestmatchcolors=None,
@@ -273,7 +273,7 @@ class Somoclu(object):
             raise Exception("Continous labels are not available. Sure it's a"
                             " two-class problem?")
         self._view_matrix(self.labels_continuous, figsize, colormap, colorbar,
-                          bestmatches, bestmatchcolors, labels, zoom, filename)
+                          bestmatches, bestmatchcolors, labels, zoom, filename, title=' Label Matrix')
 
     def view_umatrix(self, figsize=None, colormap=cm.Spectral_r,
                      colorbar=False, bestmatches=False, bestmatchcolors=None,
@@ -306,10 +306,10 @@ class Somoclu(object):
             raise Exception("The U-matrix is not available. Either train a map"
                             " or load a U-matrix from a file")
         self._view_matrix(self.umatrix, figsize, colormap, colorbar,
-                          bestmatches, bestmatchcolors, labels, zoom, filename)
+                          bestmatches, bestmatchcolors, labels, zoom, filename, title='U-Matrix')
 
     def _view_matrix(self, matrix, figsize, colormap, colorbar, bestmatches,
-                     bestmatchcolors, labels, zoom, filename):
+                     bestmatchcolors, labels, zoom, filename, title=None):
         """Internal function to plot a map with best matching units and labels.
         """
         if zoom is None:
@@ -358,6 +358,8 @@ class Somoclu(object):
                     plt.annotate(self.labels[row, col], xy=(col, row), xytext=(10, -5), textcoords='offset points',
                                  ha='left', va='bottom', bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.8))
         plt.axis('off')
+        if title is not None:
+            plt.title(title)
         if filename is not None:
             plt.savefig(filename)
         else:

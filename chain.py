@@ -1,8 +1,10 @@
 from collections import OrderedDict
 import time
+import pickle
 from dataset import connect
 import os
 import multiprocessing_on_dill as multiprocessing
+
 import json
 from warnings import warn
 import nibabel
@@ -17,7 +19,7 @@ from .descriptor import DescriptorConcatenator, Data, ClassifierDescriptor, \
 
 class SimpleChain:
 
-    def __init__(self, data, clf=SVC, clf_args=None, fs=None, fs_args=None, labels=None):
+    def __init__(self, data, clf=SVC, clf_args=None, fs=None, fs_args=None, labels=None, cv=None):
 
         """ Simple interface to start analyses.
 
@@ -40,6 +42,7 @@ class SimpleChain:
         self.clf = clf
         self.fs_args = fs_args
         self.fs = fs
+        self.cv = cv
 
         self._build_chain()
 
@@ -49,12 +52,14 @@ class SimpleChain:
 
     @data.setter
     def data(self, value):
-        if isinstance(value, Data):
+        if isinstance(value, list) and isinstance(value[0], Data):
             self._data = value
+        elif isinstance(value, Data):
+            self._data = [value]
         else:
             if self.labels is None:
                 raise ValueError('No labels have been provided!')
-            self._data = Data(value, self.labels)
+            self._data = [Data(value, self.labels)]
         if hasattr(self, 'chain'):
             self._build_chain()
 
@@ -67,7 +72,7 @@ class SimpleChain:
         if isinstance(value, ClassifierDescriptor):
             self._clf = value
         else:
-            self._clf = ClassifierDescriptor(clf=value, clf_args=self.clf_args)
+            self._clf = ClassifierDescriptor(name=str(value)[8:-2], clf=value, clf_args=self.clf_args)
         if hasattr(self, 'chain'):
             self._build_chain()
 
@@ -93,7 +98,7 @@ class SimpleChain:
         if isinstance(value, FeatureSelectionDescriptor):
             self._fs = value
         else:
-            self._fs = FeatureSelectionDescriptor(name=value, fs_args=self.fs_args)
+            self._fs = FeatureSelectionDescriptor(type=value, fs_args=self.fs_args)
         if hasattr(self, 'chain'):
             self._build_chain()
 
@@ -105,8 +110,12 @@ class SimpleChain:
 
     def _build_chain(self):
         self.channel = Channel(clfs=self.clf, fss=self.fs)
-        self.scheme = SchemeDescriptor(name=self.data.name, data=self.data, channels=self.channel)
-        self.chain = ChainBuilder(schemes=self.scheme).build_chain()
+        self.schemes = []
+        for i, data in enumerate(self.data):
+            cv = self.cv[i] if isinstance(self.cv, list) else self.cv
+            self.schemes.append(SchemeDescriptor(name='%s_%g' % (data.name, i), data=data,
+                                                 channels=self.channel, cv=cv))
+        self.chain = ChainBuilder(schemes=self.schemes).build_chain()
 
 class Link:
 
@@ -211,38 +220,67 @@ class Chain:
         if n_jobs_links > 1 and n_jobs_folds > 1:
             raise Exception('You cannot set both n_jobs_chain and n_jobs_folds > 1.')
 
-        if not self.link_list[0].scheme.channels[0].clfs._searchlight:
+
+        is_searchlight = self.link_list[0].scheme.channels[0].clfs._searchlight
+        has_time = self.link_list[0].scheme.data[0].has_time
+
+        lockfile_timestamp = timestamp
+        if not is_searchlight and not has_time:
             if output_path is None:
                 db_string = 'sqlite:///:memory:'
                 output_dir = '/tmp/'
             elif os.path.splitext(output_path)[1] == '.db':
-                output_dir = os.path.splitext(output_path)[0]
-                if os.path.exists(output_path) and not recompute:
+                output_dir = os.path.dirname(output_path)
+                if os.path.exists(output_path):
                     db_string = 'sqlite:///%s' % output_path
                     db = connect(db_string)
-                    in_db = []
-                    for i, link in enumerate(self.link_list):
-                        where = ' '.join(["AND %s IS '%s'" % (k, v)
-                                          for k, v in link.description.items()])[4:]
-                        if list(db.query('SELECT id FROM chain WHERE %s' % where)):
-                            in_db.append(i)
-                    for i in sorted(in_db, reverse=True):
-                        print('deleting %s' % self.link_list[i].description_str)
-                        del self.link_list[i] # if entry in database, remove from linkdef_list
+                    basename = os.path.splitext(os.path.basename(output_path))[0]
+                    if len(basename) == 20 and basename.startswith('data_'):
+                        lockfile_timestamp = basename[5:]
+                    else:
+                        print('Cannot infer lockfile name of previous chain(s). Using '
+                              'timestamp as name instead.')
+                    if not recompute:
+                        in_db = []
+                        exclude_keys = ['in_id', 'clf_id']
+                        for i, link in enumerate(self.link_list):
+                            if all([k in db[db.tables[0]].columns for k in link.description.keys()]):
+                                where = ' '.join(["AND %s IS '%s'" % (k, v)
+                                                  for k, v in link.description.items()
+                                                  if k not in exclude_keys])[4:]
+                                where = where.replace("'True'", "1").replace("'False'", "0").\
+                                    replace("'None'", "NULL")
+                                if list(db.query('SELECT id FROM chain WHERE %s' % where)):
+                                    # and not list(db.query('SELECT correct FROM chain WHERE %s' % where))[0]['correct'] is None:
+                                    in_db.append(i)
+                        for i in sorted(in_db, reverse=True):
+                            print('Deleting %s' % self.link_list[i].description_str)
+                            del self.link_list[i]  # if entry in database, remove from linkdef_list
+                        print('Deleted %g links' % len(in_db))
                 else:
-                    db_string = 'sqlite:///%s_%s.db' % (os.path.splitext(output_path)[0], timestamp)
+                    # db_string = 'sqlite:///%s_%s.db' % (os.path.splitext(output_dir)[0], timestamp)
+                    db_string = 'sqlite:///%s' % output_path
             else:
                 output_dir = output_path
                 db_string = 'sqlite:///%s' % os.path.join(output_path, 'data_%s.db' % timestamp)
         else:
-            db_string = None
-            output_dir = os.path.dirname(output_path)
+            db_string = ''
+            if output_path is not None:
+                output_dir = os.path.dirname(output_path)
+            else:
+                output_dir = None
 
-        if zip_code_dirs is not None:
+
+        if output_dir is not None and zip_code_dirs is not None:
             zip_path = os.path.join(output_dir, 'archive_%s.zip' % timestamp)
             zip_directory_structure(zip_code_dirs, zip_path, allowed_pattern='*.py')
-
-        lockfile = os.path.join(output_dir, 'lock_%s' % timestamp)
+        if output_dir is not None and not has_time and not is_searchlight:
+            lockfile = os.path.join(output_dir, 'lock_%s' % lockfile_timestamp)
+            print('Lockfile: %s' % lockfile)
+        else:
+            lockfile = None
+        if db_string:
+            print('Database: %s' % db_string)
 
         if n_jobs_links == 1:
             chain = []
@@ -267,7 +305,9 @@ class Chain:
                 for message in link.info['messages']:
                     print(message)
 
-        return chain
+        print('Finished chain!')
+
+        return chain[0] if len(chain) == 1 else chain
 
 
 def _link(params):
@@ -288,6 +328,7 @@ def _link(params):
         skip_ioerror, db_string, lockfile, output_path, timestamp, detailed_save = params
 
     searchlight = link.scheme.channels[0].clfs._searchlight
+    has_time = link.scheme.data[0].has_time
 
     link_string = "Running chain link %g / %g %s\n%s" % \
                   (link_id + 1, chain_len, db_string, link.description_str)
@@ -299,7 +340,7 @@ def _link(params):
     link.info['t_stamp_start'] = time.time()
     link.info['messages'] = []
 
-    if not searchlight:
+    if not searchlight and not verbose == -1:
         print("\n-------  %s  -------" % link.info['t_start'])
         print(link_string)
         print("-------------------------------------\n")
@@ -322,7 +363,7 @@ def _link(params):
         link.info['t_stamp_end'] = time.time()
         link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
 
-        if not searchlight and link.result:
+        if not searchlight and not has_time and link.result:
             detailed_items = ['forest_contrib']
             result = {k: v for k, v in link.result.items() if detailed_save or not
                       any([k.startswith(e) for e in detailed_items])}
@@ -351,25 +392,53 @@ def _link(params):
                                        ('scoring_ste', result['scoring_ste']),
                                        ('proc_time', link.info['t_dur']),
                                        ('t_end', link.info['t_end']),
+                                       ('correct', json.dumps(result['correct'])),
                                        ] +
                                       list(link.description.items()))
-    if not searchlight:
+    if not searchlight and not has_time:
+        ex_type = None
         try:
-            total_time = 0
+            attempts = 0
+            # print('[%g %s] Ready to write results' % (link_id, datetime.now().strftime("%H:%M:%S.%f")))
+            # if os.path.exists(lockfile):
+                # print('[%g %s] Lockfile exists' % (link_id, datetime.now().strftime("%H:%M:%S.%f")))
             while os.path.exists(lockfile):
+                # print('[%g %s] Waiting for Lockfile' % (link_id, time.strftime("%H:%M:%S")))
                 time.sleep(0.1)
-                total_time += 0.1
-                if total_time > 100:
+                attempts += 1
+                if attempts > 100000:
+                    ex_type = 'IOError_LockTimeout'
                     raise IOError("Timeout reached for lock file\n" + link_string)
+            # print('[%g %s] Lockfile released' % (link_id, datetime.now().strftime("%H:%M:%S.%f")))
             if os.path.exists(os.path.dirname(lockfile)):
                 open(lockfile, 'a').close()
             else:
                 os.mkdir(os.path.dirname(lockfile))
             try:
-                connect(db_string)['chain'].insert(db_dict)
+                succeeded = False
+                attempts = 0
+                while not succeeded:
+                    try:
+                        # print('[%g %s #%g] Starting insert' % (link_id, datetime.now().strftime("%H:%M:%S.%f"), attempts))
+                        # tic = timeit.default_timer()
+                        connect(db_string)['chain'].insert(db_dict)
+                        # print('[%g %s #%g] Database operation (%.8f secs)' % (link_id, datetime.now().strftime("%H:%M:%S.%f"), attempts, timeit.default_timer()-tic))
+                        succeeded = True
+                    except Exception as ex:
+                        if attempts > 100000:
+                            ex_type = 'OperationalError'
+                            warning_ = "An exception of type {0} occured. Arguments:\n{1!r}\n".\
+                                format(type(ex).__name__, ex.args)
+                            warn(warning_ + link_string_short)
+                            raise
+                        attempts += 1
+                        time.sleep(0.1)
+
             except Exception:
                 if os.path.exists(lockfile):
                     os.remove(lockfile)
+                if ex_type is None:
+                    ex_type = 'IOError'
                 raise # re-raise
         except Exception as ex:
             if skip_ioerror:
@@ -377,11 +446,12 @@ def _link(params):
                     format(type(ex).__name__, ex.args)
                 warn(warning_ + link_string_short)
             else:
-                print('[IOErr] ' + link_string_short)
+                print('[%s] %s' % (ex_type, link_string_short))
                 raise  # re-raise
         finally:
             if os.path.exists(lockfile):
                 os.remove(lockfile)
+                # print('[%g %s] Lockfile removed' % (link_id, datetime.now().strftime("%H:%M:%S.%f")))
 
         # total_time = 0
         # while os.path.exists(lockfile):
@@ -393,11 +463,34 @@ def _link(params):
         #     open(lockfile, 'a').close()
         # else:
         #     os.mkdir(os.path.dirname(lockfile))
-        # connect(db_string)['chain'].insert(db_dict)
+        # # connect(db_string)['chain'].insert(db_dict)
+        # attempts = 0
+        # succeeded = False
+        # while not succeeded:
+        #     try:
+        #         connect(db_string)['chain'].insert(db_dict)
+        #         succeeded = True
+        #     except Exception as ex:
+        #         if attempts > 5:
+        #             warning_ = "An exception of type {0} occured. Arguments:\n{1!r}\n".\
+        #                 format(type(ex).__name__, ex.args)
+        #             warn(warning_ + link_string_short)
+        #             raise
+        #         attempts += 1
+        #         time.sleep(0.1)
+        #
         #
         # if os.path.exists(lockfile):
         #     os.remove(lockfile)
 
+
+    elif has_time:
+        print('Elapsed time: %.1f minutes' % (link.info['t_dur'] / 60.))
+        if output_path is not None:
+            fname = '%s_%s.pkl' % (link.scheme.data[0].name, link.scheme.channels[0].clfs.name)
+            pickle.dump(link.result, open(os.path.join(output_path, fname), 'wb'))
+            print('[%s] Saved result in %s' % (time.strftime("%d.%m %H:%M:%S"),
+                                               os.path.join(output_path, fname)))
 
     else:  # searchlight
         for k, img in link.result.items():
@@ -476,8 +569,9 @@ class ChainBuilder(object):
             select_indices = [select_indices]
 
         link_list = []
-        for i, scheme in zip(select_indices, selected_schemes):
-            link_list.append(Link(scheme=scheme))
+        for i, scheme in enumerate(selected_schemes):
+            if i in select_indices:
+                link_list.append(Link(scheme=scheme))
 
         chain = Chain(link_list)
 

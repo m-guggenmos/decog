@@ -28,19 +28,30 @@ class UnivariateVoting(BaseEstimator, ClassifierMixin):
         for f, x in enumerate(X):
             accuracy_max = 0
             ind = np.argsort(x)
-            for i, sample in enumerate(x[ind[:-1]]):
-                next_sample = x[ind[i + 1]]
-                threshold = sample + (next_sample - sample) / 2.
-                accuracy = np.mean(self.classes_[(x[ind] > threshold).astype(int)] == y[ind])
-                if accuracy < 0.5:
-                    accuracy = 1 - accuracy
-                    flip_class_order = True
-                else:
-                    flip_class_order = False
-                if accuracy > accuracy_max:
-                    accuracy_max = accuracy
-                    self.threshold_max[f] = threshold
-                    self.flip_class_order_max[f] = flip_class_order
+            x_sorted = x[ind]
+            thresholds = x_sorted[:-1] + np.diff(x_sorted)/2
+            comp = (x[None, ...] > thresholds[..., None]).astype(np.int)
+            comp[comp] = self.classes_[1]
+            comp[np.logical_not(comp)] = self.classes_[0]
+            accuracy = np.mean(comp == y, axis=1)
+            accuracy_abs = 0.5 + np.abs(accuracy - 0.5)
+            best = accuracy_abs.argmax()
+            self.threshold_max[f] = thresholds[best]
+            self.flip_class_order_max[f] = accuracy[best] < 0.5
+
+            # for i, sample in enumerate(x[ind[:-1]]):
+            #     next_sample = x[ind[i + 1]]
+            #     threshold = sample + (next_sample - sample) / 2.
+            #     accuracy = np.mean(self.classes_[(x[ind] > threshold).astype(int)] == y[ind])
+            #     if accuracy < 0.5:
+            #         accuracy = 1 - accuracy
+            #         flip_class_order = True
+            #     else:
+            #         flip_class_order = False
+            #     if accuracy > accuracy_max:
+            #         accuracy_max = accuracy
+            #         self.threshold_max[f] = threshold
+            #         self.flip_class_order_max[f] = flip_class_order
 
         return self
 

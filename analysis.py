@@ -1,4 +1,5 @@
 import time
+import timeit
 import importlib
 import warnings
 from inspect import signature
@@ -19,6 +20,7 @@ from treeinterpreter import treeinterpreter as ti
 from .feature_selection import MultiRoiVarianceThreshold, MuliRoiSelectPercentile, \
     MultiRoiSelectFromModel, SelectRoisFromModel, MultiRoiVariancePercentile, VariancePercentile
 from .cv import DummyCV
+import pickle
 
 
 class Analysis:
@@ -40,7 +42,7 @@ class Analysis:
         self.searchlight = self.scheme.channels[0].clfs._searchlight
 
         self.n_folds = None
-        self.cv_outer = None
+        self.cv = None
         self.n_seeds = None
         self.n_samples = None
         self.seed_list = None
@@ -82,6 +84,7 @@ class Analysis:
         self.is_regression = self.scheme.channels[0].clfs.regression
         self.y_true = np.array(self.scheme.data[0].labels)
         self.label_names = self.scheme.data[0].label_names
+        self.has_time = self.scheme.data[0].has_time
 
         self.seed_lists = [channel.clfs.seed_list for channel in self.scheme.channels]
         self.n_seeds = [len(sl) for sl in self.seed_lists]
@@ -89,36 +92,95 @@ class Analysis:
 
         if not self.searchlight:
             if not hasattr(self.scheme, 'cv') or self.scheme.cv is None:
-                self.cv_outer = LeaveOneOut(self.n_samples)
+                self.cv = LeaveOneOut(self.n_samples)
                 # from sklearn.cross_validation import KFold
                 # self.cv_outer = KFold(self.n_samples)
             else:
-                self.cv_outer = self.scheme.cv
+                self.cv = self.scheme.cv
         else:  # Nilearn searchlight algorihm uses an internal CV, so here we use a dummy CV
-            self.cv_outer = DummyCV(self.n_samples)
+            self.cv = DummyCV(self.n_samples)
 
-        self.n_folds = len(self.cv_outer)
+        self.n_folds = len(self.cv)
 
         self._construct_pipe()
 
+        kwargs = dict()
+        if self.has_time:
+            func_fold = self._fold_time
+            if isinstance(self.scheme.data[0].data, str):
+                kwargs['X'] = pickle.load(open(self.scheme.data[0].data, 'rb'))
+            else:
+                kwargs['X'] = self.scheme.data[0].data
+        else:
+            func_fold = self._fold
+
         if n_jobs_folds == 1:
             results = []
-            for f, (train_index, test_index) in enumerate(self.cv_outer):
-                results.append(self._fold((f, train_index, test_index)))
+            for f, (train_index, test_index) in enumerate(self.cv):
+                results.append(func_fold((f, train_index, test_index, kwargs)))
         else:
             pool = multiprocessing.Pool(None if n_jobs_folds == -1 else n_jobs_folds)
-            results = pool.map(self._fold,
-                               [(f, train_index, test_index)
-                                for f, (train_index, test_index) in enumerate(self.cv_outer)])
+            results = pool.map(func_fold,
+                               [(f, train_index, test_index, kwargs)
+                                for f, (train_index, test_index) in enumerate(self.cv)])
             pool.close()
 
-        if not self.searchlight:
+        if self.has_time:
+            result = np.mean(results, axis=0)
+        elif not self.searchlight:
             result = self._post_processing(results)
             self._print_result(result)
         else:
             result = {'seed%g' % s: results[0][0][0][s]['searchlight']
                       for s in range(self.n_seeds[0])}
             print('Searchlight finished!')
+
+        return result
+
+    def _fold_time(self, params):
+
+        f, train_indices, test_indices, kwargs = params
+
+        X = kwargs['X']
+
+        n_time = X.shape[2]
+        n_channels = X.shape[1]
+
+        if self.verbose > 1:
+            tic = timeit.default_timer()
+            print('[%s] Permutation %g / %g' %
+                  (time.strftime("%d.%m %H:%M:%S"), f + 1, self.n_folds))
+
+        Xpseudo_train = np.full((self.cv.n_classes*(self.cv.n_pseudo-1), n_channels,
+                                 n_time), np.nan)
+        Xpseudo_test = np.full((self.cv.n_classes, n_channels, n_time), np.nan)
+        result = np.full((self.cv.n_classes, self.cv.n_classes, n_time), np.nan)
+
+        for i, order_ in enumerate(train_indices):
+            Xpseudo_train[i, :, :] = np.mean(X[order_, :, :], axis=0)
+        for i, order_ in enumerate(test_indices):
+            Xpseudo_test[i, :, :] = np.mean(X[order_, :, :], axis=0)
+
+        # n_comb = (self.cv.n_classes**2 - self.cv.n_classes) / 2
+        # k = 1
+        for c1 in range(self.cv.n_classes):
+            for c2 in range(c1 + 1, self.cv.n_classes):
+                # tic2 = timeit.default_timer()
+                for time_point in range(n_time):
+                    data_train = Xpseudo_train[self.cv.ind_pseudo_train[c1, c2], :, time_point]
+                    data_test = Xpseudo_test[self.cv.ind_pseudo_test[c1, c2], :, time_point]
+                    self.clf[0].fit(data_train, self.cv.labels_pseudo_train[c1, c2])
+                    if self.clf[0]._estimator_type == 'distance':
+                        dissimilarity = self.clf[0].predict(data_test, y=self.cv.labels_pseudo_test[c1, c2])
+                    else:
+                        predictions = self.clf[0].predict(data_test)
+                        dissimilarity = np.mean(predictions == self.cv.labels_pseudo_test[c1, c2])
+                    result[c1, c2, time_point] = dissimilarity
+                # print('Pair %g / %g: %.4s secs' % (k, n_comb, timeit.default_timer() - tic2))
+                # k += 1
+
+        if self.verbose > 1:
+            print('Permutation time: %.2f secs' % (timeit.default_timer() - tic))
 
         return result
 
@@ -135,7 +197,7 @@ class Analysis:
         tuple: (channel result, meta result)
 
         """
-        f, train_indices, test_indices = params
+        f, train_indices, test_indices, kwargs = params
         n_test = len(test_indices)
 
         ### Prepare data structures ###
@@ -180,8 +242,10 @@ class Analysis:
                 ### can prefit the preprocessing steps
                 if self.param_grid[c] is None and train_cache[c] is None and \
                     not ('fs_model' in dict(self.steps[c]) and seed_ is not None):
-                    train_cache[c] = Pipeline(self.steps[c][:-1]).fit_transform(data_train,
-                                                                                labels_train)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        train_cache[c] = Pipeline(self.steps[c][:-1]).fit_transform(data_train,
+                                                                                    labels_train)
                 ###
 
                 ### Set seeds ###
@@ -313,7 +377,7 @@ class Analysis:
                 y_pred=np.full(self.n_samples, np.nan)
             )
 
-        for f, (train_index, test_index) in enumerate(self.cv_outer):
+        for f, (train_index, test_index) in enumerate(self.cv):
             result_channels_fold, result_meta_fold = results[f]
             if self.is_multichannel:
                 result_meta['y_pred'][test_index] = result_meta_fold['y_pred']
@@ -410,7 +474,7 @@ class Analysis:
             Dictionary containing the results
         """
 
-        if self.verbose:
+        if self.verbose > 0:
             print('***************************************************')
             for c in range(self.n_channels):
                 pfx = '%g_' % c if self.is_multichannel else ''
@@ -490,9 +554,11 @@ class Analysis:
             self.scoring(self.y_true, np.round(container[pfx + 'predictions'])).tolist()
 
         if self.is_regression:
+            container[pfx + 'correct'] = None
             container[pfx + 'explained_variance'] = \
                 explained_variance_score(self.y_true, container[pfx + 'predictions']).tolist()
         else:
+            container[pfx + 'correct'] = (container[pfx + 'predictions'] == self.y_true).tolist()
             p_binom = max([np.mean(self.scheme.data[0].labels == l)
                      for l in np.unique(self.scheme.data[0].labels)])
             container[pfx + 'binom_statistic'] = \
@@ -613,12 +679,12 @@ class Analysis:
                 self.param_grid[c]['masker__smoothing_fwhm'] = \
                     self.scheme.masker_args[c]['smoothing_fwhm']
 
-            fs_names = [f.name for f in self.scheme.channels[c].fss] \
+            fs_types = [f.type for f in self.scheme.channels[c].fss] \
                 if self.scheme.channels[c].fss is not None else []
 
             # variance-based feature selection
-            if 'variance' in fs_names:
-                fs = self.scheme.channels[c].fss[fs_names.index('variance')]
+            if 'variance' in fs_types:
+                fs = self.scheme.channels[c].fss[fs_types.index('variance')]
                 variance_threshold = MultiRoiVarianceThreshold() if self.scheme.is_multiroi[c] \
                                 else VarianceThreshold()
                 for k, v in fs.fs_args.items():
@@ -630,8 +696,8 @@ class Analysis:
                 self.selection[c].append(variance_threshold)
 
             # variance-based feature selection
-            if 'variance_percentile' in fs_names:
-                fs = self.scheme.channels[c].fss[fs_names.index('variance_percentile')]
+            if 'variance_percentile' in fs_types:
+                fs = self.scheme.channels[c].fss[fs_types.index('variance_percentile')]
                 if self.scheme.is_multiroi[c]:
                     variance_threshold = MultiRoiVariancePercentile()
                 else:
@@ -645,8 +711,8 @@ class Analysis:
                 self.selection[c].append(variance_threshold)
 
             # F-test-based feature selection
-            if 'percentile' in fs_names:
-                fs = self.scheme.channels[c].fss[fs_names.index('percentile')]
+            if 'percentile' in fs_types:
+                fs = self.scheme.channels[c].fss[fs_types.index('percentile')]
                 f_score = f_regression if self.scheme.channels[c].clfs.regression else f_classif
                 percentile = MuliRoiSelectPercentile(score_func=f_score) if \
                     self.scheme.is_multiroi[c] else SelectPercentile(score_func=f_score)
@@ -659,8 +725,8 @@ class Analysis:
                 self.selection[c].append(percentile)
 
             # model-based feature selection
-            if 'model' in fs_names or 'nested' in fs_names:
-                fs = self.scheme.channels[c].fss[fs_names.index(('nested', 'model')['model' in fs_names])]
+            if 'model' in fs_types or 'nested' in fs_types:
+                fs = self.scheme.channels[c].fss[fs_types.index(('nested', 'model')['model' in fs_types])]
                 if self.scheme.is_multiroi[c]:
                     select_from = MultiRoiSelectFromModel
                 else:
@@ -686,8 +752,8 @@ class Analysis:
                 self.selection[c].append(fs_model)
 
             # model-based selection of ROIs
-            if 'roi' in fs_names:
-                fs = self.scheme.channels[c].fss[fs_names.index('roi')]
+            if 'roi' in fs_types:
+                fs = self.scheme.channels[c].fss[fs_types.index('roi')]
                 if fs.fs_args['roi_model'] == 'nested':
                     for k, v in clf_args.items():
                         if isinstance(v, list):
@@ -727,7 +793,7 @@ class Analysis:
                 if self.n_jobs_folds is not None and self.searchlight:
                     clf_args.update(n_jobs=self.n_jobs_folds)
                 if 'verbose' in signature(clf).parameters.keys():
-                    clf_args.update(verbose=max(0, self.verbose-1))
+                    clf_args.update(verbose=max(0, self.verbose-2))
                 self.clf[c] = clf(**clf_args)
                 if np.any([isinstance(v, list) for v in clf_args.values()]):
                     for k, v in clf_args.items():
