@@ -1,5 +1,5 @@
 # decereb
-High-level interface for sklearn / nilearn, targeted at neuroimaging data analysis. Not even alpha at the moment -- the API is expected to change on a daily basis.
+High-level interface for sklearn / nilearn, targeted at neuroimaging data analysis. Not even alpha at the moment -- the API may change anytime.
 
 **Simple example:**
 
@@ -69,10 +69,12 @@ X1, y1 = make_classification()
 X2, y2 = make_classification()
 
 # Now we setup a list with three different classifiers by using the ClassifierDescriptor class.
+# Please note that still all requested permutations for the parameters of each classifier are
+# expanded (see simple example).
 clf_args_SVC = dict(kernel='linear', C=[[0.1, 1]])
 clf_args_RF = dict(criterion=['entropy', 'gini'], n_estimators=128)
 clfs = [
-    ClassifierDescriptor(name='SVC_rbf', clf=SVC, clf_args=clf_args_SVC),
+    ClassifierDescriptor(name='SVC', clf=SVC, clf_args=clf_args_SVC),
     ClassifierDescriptor(name='RF', clf=RandomForestClassifier, clf_args=clf_args_RF),
     ClassifierDescriptor(name='LDA', clf=LinearDiscriminantAnalysis)
 ]
@@ -88,7 +90,7 @@ fss = [
 channel = Channel(fss=fss, clfs=clfs)
 
 # The (processing) scheme descriptor glues together the data input and processing pipeline. The
-# scoring argument allows passing of performance evaluation metric (see sklearn.metrics).
+# scoring argument allows passing of a performance evaluation metric (see sklearn.metrics).
 processing_schemes = [
     SchemeDescriptor(name='data_v1', data=Data(X1, y1), channels=channel, scoring='roc_auc'),
     SchemeDescriptor(name='data_v2', data=Data(X2, y2), channels=channel, scoring='roc_auc')
@@ -98,7 +100,10 @@ processing_schemes = [
 analysis = ChainBuilder(schemes=processing_schemes).build_chain()
 
 # And run..
-# In this example the chain contains 16 different analyses ('links').
+# In this example the chain contains 16 different analyses ('links'):
+# 2 different data sets x 2 different feature selections x 4 different classifiers (SVC,
+# RandomForest with gini, RandomForest with entropy, LDA).
+# Increase the n_jobs_links variable below, to distribute these links on different processors.
 result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decereb/',
                       skip_ioerror=False, skip_runerror=False, detailed_save=True)
 print('Finished example!')
