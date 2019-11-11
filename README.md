@@ -144,3 +144,56 @@ output_path = os.path.join(root, 'searchlight.nii')
 
 chain.run(n_jobs_folds=1, verbose=3, output_path=output_path)
 ```
+
+
+**Example for multimodal analysis:**
+
+```python
+from sklearn.model_selection import LeaveOneOut
+from sklearn.preprocessing import RobustScaler
+from sklearn.svm import SVC
+
+from decog.chain import ChainBuilder
+from decog.cv import SuperExhaustiveLeaveNOut
+from decog.descriptor import SchemeDescriptor, ClassifierDescriptor, PreprocessingDescriptor, Data, Channel
+from decog.estimators.metaclf import MultiModalProbabilisticMetaClassifier
+
+PATH_DATA = '/PATH/TO/DATA/'
+
+WEIGHTGRID = [1, 2]
+
+MODALITIES = [
+    'FS_CT',
+    'VBM_GMD',
+    'VBM_CSFV',
+    'RS_NA',
+    'TS_OUT',
+]
+
+PATH = '/PATH/TO/SAVE/RESULTS/'
+
+data = 'DATA DICTIONARY (ONE MODALITY PER KEY)'
+
+LABELS = 'PROVIDE A LIST OF LABELS'
+LABEL_NAMES = ['controls', 'patients']
+
+cv = LeaveOneOut()
+cv_weight = SuperExhaustiveLeaveNOut(N=2)
+
+CLF = ClassifierDescriptor(name='SVC_rbf', clf=SVC, clf_args=dict(kernel='rbf', class_weight='balanced', C=8))
+
+clfs = dict(VBM_GMD=CLF, VBM_CSFV=CLF, FS_CT=CLF, TS_OUT=CLF, RS_NA=CLF)
+preproc = PreprocessingDescriptor('preproc', preprocessor=RobustScaler, preprocessor_args=dict(quantile_range=(1.0, 99.0)))
+
+channels = dict([(k, Channel(data=Data(data[k]), preproc=preproc, clfs=clfs[k])) for k in MODALITIES])
+
+scheme = SchemeDescriptor(channels, LABELS, scoring='balanced_accuracy', label_names=LABEL_NAMES, cv=cv,
+                          meta_clf=MultiModalProbabilisticMetaClassifier,
+                          meta_clf_args=dict(weight_grid=WEIGHTGRID, weight_cv=cv_weight, weight_separate=False, discrete=False))
+
+if __name__ == '__main__':
+
+    chain = ChainBuilder(schemes=scheme).build_chain()
+    analysis = chain.run(n_jobs_links=1, n_jobs_folds=1, n_jobs_grid=1, verbose=1, output_path=PATH,
+                         skip_ioerror=False, skip_runerror=False, detailed_save=True, recompute=True)
+```
