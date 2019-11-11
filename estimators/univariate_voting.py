@@ -39,17 +39,17 @@ class UnivariateVoting(BaseEstimator, ClassifierMixin):
             self.threshold_max[f] = thresholds[best]
             self.flip_class_order_max[f] = accuracy[best] < 0.5
 
-            # for i, sample in enumerate(x[ind[:-1]]):
-            #     next_sample = x[ind[i + 1]]
+            # for i, sample in enumerate(x[ind_pat[:-1]]):
+            #     next_sample = x[ind_pat[i + 1]]
             #     threshold = sample + (next_sample - sample) / 2.
-            #     accuracy = np.mean(self.classes_[(x[ind] > threshold).astype(int)] == y[ind])
-            #     if accuracy < 0.5:
-            #         accuracy = 1 - accuracy
+            #     pred = np.mean(self.classes_[(x[ind_pat] > threshold).astype(int)] == y[ind_pat])
+            #     if pred < 0.5:
+            #         pred = 1 - pred
             #         flip_class_order = True
             #     else:
             #         flip_class_order = False
-            #     if accuracy > accuracy_max:
-            #         accuracy_max = accuracy
+            #     if pred > accuracy_max:
+            #         accuracy_max = pred
             #         self.threshold_max[f] = threshold
             #         self.flip_class_order_max[f] = flip_class_order
 
@@ -72,10 +72,10 @@ class UnivariateVoting(BaseEstimator, ClassifierMixin):
     # def decision_function(self, X):
     #
     #     if self.vote_weighting:
-    #         votes = robust_scale(abs(X - self.averages[0, :]) - abs(X - self.averages[1, :]), with_centering=False,
+    #         votes = robust_scale(abs(X - self.prototypes_[0, :]) - abs(X - self.prototypes_[1, :]), with_centering=False,
     #                              axis=1)
     #     else:
-    #         votes = 2 * (abs(X - self.averages[0, :]) > abs(X - self.averages[1, :])) - 1
+    #         votes = 2 * (abs(X - self.prototypes_[0, :]) > abs(X - self.prototypes_[1, :])) - 1
     #     if self.dist_weighting is None:
     #         dec = np.sum(votes, 1) / votes.shape[1]
     #     else:

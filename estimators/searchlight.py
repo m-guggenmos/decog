@@ -63,7 +63,7 @@ class SearchLight(BaseEstimator):
     Its principle is relatively simple: a small group of neighboring
     features is extracted from the data, and the prediction function is
     instantiated on these features only. The resulting prediction
-    accuracy is thus associated with all the features within the group,
+    pred is thus associated with all the features within the group,
     or only with the feature on the center. This yields a map of local
     fine-grained information, that can be used for assessing hypothesis
     on the local spatial layout of the neural code under investigation.
@@ -192,7 +192,7 @@ def accuracy_minus_chance_scorer(chance_level=0.5):
 def _pearson_func(y, y_pred):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        result = pearsonr(y, y_pred)[0]
+        result = np.arctanh(pearsonr(y, y_pred)[0])
     return result
 
 

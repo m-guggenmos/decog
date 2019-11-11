@@ -4,7 +4,7 @@ from sklearn.utils import safe_mask, check_array
 from sklearn.utils.sparsefuncs import mean_variance_axis
 from warnings import warn
 import numpy as np
-from decereb.estimators import RoiEnsemble
+from decog.estimators import RoiEnsemble
 
 class MultiRoiVarianceThreshold(BaseEstimator, SelectorMixin):
     """Feature selector that removes all low-variance features.

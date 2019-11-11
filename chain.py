@@ -12,14 +12,16 @@ from sklearn.svm import SVC
 import numpy as np
 
 from .util.archiving import zip_directory_structure
+from .util.various import elapsed_time
 from .analysis import Analysis
 from .descriptor import DescriptorConcatenator, Data, ClassifierDescriptor, \
-    FeatureSelectionDescriptor, SchemeDescriptor, Channel
+    FeatureSelectionDescriptor, PreprocessingDescriptor, SchemeDescriptor, Channel
 
 
 class SimpleChain:
 
-    def __init__(self, data, clf=SVC, clf_args=None, fs=None, fs_args=None, labels=None, cv=None):
+    def __init__(self, data, labels, clf=SVC, clf_args=None, preproc=None, preproc_args=None,
+                 fs=None, fs_args=None, cv=None, **scheme_kwargs):
 
         """ Simple interface to start analyses.
 
@@ -40,9 +42,12 @@ class SimpleChain:
         self.data = data
         self.clf_args = clf_args
         self.clf = clf
+        self.preproc_args = preproc_args
+        self.preproc = preproc
         self.fs_args = fs_args
         self.fs = fs
         self.cv = cv
+        self.scheme_kwargs = scheme_kwargs
 
         self._build_chain()
 
@@ -57,9 +62,7 @@ class SimpleChain:
         elif isinstance(value, Data):
             self._data = [value]
         else:
-            if self.labels is None:
-                raise ValueError('No labels have been provided!')
-            self._data = [Data(value, self.labels)]
+            self._data = [Data(value)]
         if hasattr(self, 'chain'):
             self._build_chain()
 
@@ -90,31 +93,46 @@ class SimpleChain:
             self._build_chain()
 
     @property
+    def preproc(self):
+        return self._preproc
+
+    @preproc.setter
+    def preproc(self, value):
+        if isinstance(value, PreprocessingDescriptor) or value is None:
+            self._preproc = value
+        else:
+            self._preproc = PreprocessingDescriptor(preprocessor=value, preprocessor_args=self.preproc_args)
+        if hasattr(self, 'chain'):
+            self._build_chain()
+
+    @property
     def fs(self):
         return self._fs
 
     @fs.setter
     def fs(self, value):
-        if isinstance(value, FeatureSelectionDescriptor):
+        if isinstance(value, FeatureSelectionDescriptor) or value is None:
             self._fs = value
         else:
             self._fs = FeatureSelectionDescriptor(type=value, fs_args=self.fs_args)
         if hasattr(self, 'chain'):
             self._build_chain()
 
-    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=1,
-            output_path='/tmp/decereb/', skip_ioerror=False, skip_runerror=False,
-            detailed_save=True):
-        return self.chain.run(n_jobs_links, n_jobs_folds, verbose, output_path, skip_ioerror,
-                              skip_runerror, detailed_save)
+    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decereb/',
+            recompute=False, skip_runerror=False, skip_ioerror=False, zip_code_dirs=None,
+            detailed_save=False):
+        return self.chain.run(n_jobs_links=n_jobs_links, n_jobs_folds=n_jobs_folds, verbose=verbose,
+                              output_path=output_path, recompute=recompute, skip_runerror=skip_runerror,
+                              skip_ioerror=skip_ioerror, zip_code_dirs=zip_code_dirs, detailed_save=detailed_save)
 
     def _build_chain(self):
-        self.channel = Channel(clfs=self.clf, fss=self.fs)
         self.schemes = []
         for i, data in enumerate(self.data):
+            channel = Channel(data=self.data[i], clfs=self.clf, preproc=self.preproc, fss=self.fs)
             cv = self.cv[i] if isinstance(self.cv, list) else self.cv
-            self.schemes.append(SchemeDescriptor(name='%s_%g' % (data.name, i), data=data,
-                                                 channels=self.channel, cv=cv))
+            scheme_name = '%s_%s' % (data.name, self.clf.name)
+            self.schemes.append(SchemeDescriptor(channel, self.labels[i], name=scheme_name, data=data,
+                                                 cv=cv, **self.scheme_kwargs))
         self.chain = ChainBuilder(schemes=self.schemes).build_chain()
 
 class Link:
@@ -141,37 +159,31 @@ class Link:
         self.description_str = None
         self.db_scheme_info_optional = None
 
-        self.n_channels = len(self.scheme.channels)
-
         self.build_db_data()
 
     def build_db_data(self):
 
         """ Generate the database information to be saved for the current link
         """
-        is_multichannel = self.n_channels > 1
-
-        def prefix(c, is_multichannel_): return ('', '%g_' % c)[is_multichannel_]
 
         scheme_descrip = list(self.scheme.identifier.items())
-        clf_descrip = [[('%s%s' % (prefix(c, is_multichannel), k), v)
-                        for k, v in channel.clfs.identifier.items()]
-                       for c, channel in enumerate(self.scheme.channels)]
-        fs_descrip = [[[('%s%s' % (prefix(c, is_multichannel), k), v)
-                        for k, v in fs.identifier.items()] for fs in channel.fss]
-                      if channel.fss is not None
-                      else [[('%s%s' % (prefix(c, is_multichannel), 'fs_name'), None)]]
-                      for c, channel in enumerate(self.scheme.channels)]
+        data_descrip = [(k, v.data.name) for k, v in self.scheme.channels.items()]
+        is_multichannel = len(self.scheme.channels) > 1
+        clf_descrip = sum([[('%s%s' % (k, ('', '[%s]' % c)[is_multichannel]), v) for k, v in channel.clfs.identifier.items()]
+                           for c, channel in self.scheme.channels.items()], [])
+        fs_descrip = sum([[('%s%s' % (k, ('', '[%s]' % c)[is_multichannel]), v) for k, v in channel.fss.identifier.items()]
+                          if channel.fss is not None else [('fs_name%s' % ('', '[%s]' % c)[is_multichannel], None)]
+                          for c, channel in self.scheme.channels.items()], [])
+
         self.description = OrderedDict(
                 scheme_descrip +
-                sum(clf_descrip, []) +
-                sum(sum(fs_descrip, []), [])
+                data_descrip +
+                clf_descrip +
+                fs_descrip
         )
         self.description_str = str(self.description)[12:-1]
-        data_descrip = [[('%s%s' % (prefix(c, is_multichannel), info), channel[info])
-                         for c, channel in enumerate(self.scheme.data)]
-                        for info in Data.optional_info_items]
-        self.description_optional = OrderedDict(sum(data_descrip, []))
+        data_descrip = [(info, getattr(self.scheme, info)) for info in self.scheme.optional_info_items]
+        self.description_optional = OrderedDict(data_descrip)
 
 
 class Chain:
@@ -184,10 +196,13 @@ class Chain:
         ----------
         link_list : a list of decereb.chain.Link objects
         """
+        if not isinstance(link_list, (list, tuple)):
+            link_list = [link_list]
         self.link_list = link_list
 
-    def run(self, n_jobs_links=1, n_jobs_folds=1, verbose=2, output_path=None, recompute=False,
-            skip_runerror=True, skip_ioerror=False, zip_code_dirs=None, detailed_save=False):
+    def run(self, n_jobs_links=1, n_jobs_folds=1, n_jobs_grid=1, verbose=2, output_path=None,
+            cv_pre=None, topickle=False, recompute=False, skip_runerror=True, skip_ioerror=False,
+            zip_code_dirs=None, detailed_save=False):
         """ Start the analyses chain
         Parameters
         ----------
@@ -211,7 +226,7 @@ class Chain:
         zip_code_dirs: List<str>, None
             python files encontained in a list of directory paths are saved as a zip file
         detailed_save : bool
-            whether to save harddisk-intensive analyses results are saved
+            whether harddisk-intensive analyses results are saved
             [TODO: which ones?]
         """
 
@@ -221,15 +236,12 @@ class Chain:
             raise Exception('You cannot set both n_jobs_chain and n_jobs_folds > 1.')
 
 
-        is_searchlight = self.link_list[0].scheme.channels[0].clfs._searchlight
-        has_time = self.link_list[0].scheme.data[0].has_time
+        is_searchlight = self.link_list[0].scheme.searchlight
+        has_time = self.link_list[0].scheme.has_time
 
         lockfile_timestamp = timestamp
-        if not is_searchlight and not has_time:
-            if output_path is None:
-                db_string = 'sqlite:///:memory:'
-                output_dir = '/tmp/'
-            elif os.path.splitext(output_path)[1] == '.db':
+        if not is_searchlight and not has_time and cv_pre is None and not topickle and output_path is not None:
+            if os.path.splitext(output_path)[1] == '.db':
                 output_dir = os.path.dirname(output_path)
                 if os.path.exists(output_path):
                     db_string = 'sqlite:///%s' % output_path
@@ -265,7 +277,7 @@ class Chain:
                 db_string = 'sqlite:///%s' % os.path.join(output_path, 'data_%s.db' % timestamp)
         else:
             db_string = ''
-            if output_path is not None:
+            if output_path is not None and not topickle:
                 output_dir = os.path.dirname(output_path)
             else:
                 output_dir = None
@@ -274,27 +286,28 @@ class Chain:
         if output_dir is not None and zip_code_dirs is not None:
             zip_path = os.path.join(output_dir, 'archive_%s.zip' % timestamp)
             zip_directory_structure(zip_code_dirs, zip_path, allowed_pattern='*.py')
-        if output_dir is not None and not has_time and not is_searchlight:
+        if output_dir is not None and not has_time and not is_searchlight and cv_pre is None:
             lockfile = os.path.join(output_dir, 'lock_%s' % lockfile_timestamp)
-            print('Lockfile: %s' % lockfile)
+            if verbose > -1:
+                print('Lockfile: %s' % lockfile)
         else:
             lockfile = None
-        if db_string:
+        if db_string and verbose > -1:
             print('Database: %s' % db_string)
 
         if n_jobs_links == 1:
             chain = []
             for link_id, link in enumerate(self.link_list):
-                params = (n_jobs_folds, verbose, link_id, len(self.link_list),
+                params = (n_jobs_folds, n_jobs_grid, verbose, link_id, len(self.link_list),
                           link, skip_runerror, skip_ioerror, db_string, lockfile, output_path,
-                          timestamp, detailed_save)
+                          cv_pre, topickle, timestamp, detailed_save)
                 link = _link(params)
                 chain.append(link)
         else:
             pool = multiprocessing.Pool(None if n_jobs_links == -1 else n_jobs_links)
-            params = [(n_jobs_folds, verbose, link_id, len(self.link_list),
+            params = [(n_jobs_folds, n_jobs_grid, verbose, link_id, len(self.link_list),
                        link, skip_runerror, skip_ioerror, db_string, lockfile, output_path,
-                       timestamp, detailed_save)
+                       cv_pre, topickle, timestamp, detailed_save)
                       for link_id, link in enumerate(self.link_list)]
             chain = pool.map(_link, params)
             pool.close()
@@ -305,7 +318,8 @@ class Chain:
                 for message in link.info['messages']:
                     print(message)
 
-        print('Finished chain!')
+        if verbose > -2:
+            print('Finished chain!')
 
         return chain[0] if len(chain) == 1 else chain
 
@@ -324,11 +338,11 @@ def _link(params):
         processed Link
 
     """
-    n_jobs_folds, verbose, link_id, chain_len, link, skip_runerror, \
-        skip_ioerror, db_string, lockfile, output_path, timestamp, detailed_save = params
+    n_jobs_folds, n_jobs_grid, verbose, link_id, chain_len, link, skip_runerror, skip_ioerror, \
+        db_string, lockfile, output_path, cv_pre, topickle, timestamp, detailed_save = params
 
-    searchlight = link.scheme.channels[0].clfs._searchlight
-    has_time = link.scheme.data[0].has_time
+    searchlight = link.scheme.searchlight
+    has_time = link.scheme.has_time
 
     link_string = "Running chain link %g / %g %s\n%s" % \
                   (link_id + 1, chain_len, db_string, link.description_str)
@@ -340,13 +354,15 @@ def _link(params):
     link.info['t_stamp_start'] = time.time()
     link.info['messages'] = []
 
-    if not searchlight and not verbose == -1:
+    if not searchlight and verbose > -1:
         print("\n-------  %s  -------" % link.info['t_start'])
         print(link_string)
         print("-------------------------------------\n")
 
     try:
-        link.result = link.analysis.run(n_jobs_folds=n_jobs_folds, verbose=verbose)
+        link.result = link.analysis.run(n_jobs_folds=n_jobs_folds, n_jobs_grid=n_jobs_grid,
+                                        verbose=verbose, detailed_save=detailed_save,
+                                        cv_pre=cv_pre)
     except Exception as ex:
         link.info['success'] = False
         exeception_msg = "An exception of type {0} occured. Arguments:\n{1!r}".\
@@ -356,46 +372,47 @@ def _link(params):
             warn(link.info['messages'][-1] + '\n' + link_string_short)
         else:
             print('[RunErr] ' + link_string_short)
+            print(exeception_msg)
             raise  # re-raise
     finally:
         link.info['success'] = True
         link.info['t_end'] = time.strftime("%Y/%m/%d %H:%M:%S")
         link.info['t_stamp_end'] = time.time()
         link.info['t_dur'] = link.info['t_stamp_end'] - link.info['t_stamp_start']
-
-        if not searchlight and not has_time and link.result:
-            detailed_items = ['forest_contrib']
-            result = {k: v for k, v in link.result.items() if detailed_save or not
-                      any([k.startswith(e) for e in detailed_items])}
-            messages = ", ".join(["[" + m + "]" for m in link.info['messages']]) \
-                if detailed_save else None
-            if detailed_save:
-                for k, v in link.description_optional.items():
-                    if isinstance(v, np.ndarray):
-                        link.description_optional[k] = v.tolist()
-                description_optional = json.dumps(link.description_optional) if detailed_save else None
-                db_dict = OrderedDict([('scoring', result['scoring']),
-                                       ('scoring_ste', result['scoring_ste']),
-                                       ('proc_time', link.info['t_dur']),
-                                       ('result', json.dumps(result)),
-                                       ('t_start', link.info['t_start']),
-                                       ('t_end', link.info['t_end']),
-                                       ('info', description_optional),
-                                       ('timestamp_start', link.info['t_stamp_start']),
-                                       ('timestamp_end', link.info['t_stamp_end']),
-                                       ('success', link.info['success']),
-                                       ('messages', messages)
-                                       ] +
-                                      list(link.description.items()))
-            else:
-                db_dict = OrderedDict([('scoring', result['scoring']),
-                                       ('scoring_ste', result['scoring_ste']),
-                                       ('proc_time', link.info['t_dur']),
-                                       ('t_end', link.info['t_end']),
-                                       ('correct', json.dumps(result['correct'])),
-                                       ] +
-                                      list(link.description.items()))
-    if not searchlight and not has_time:
+        if cv_pre is None:
+            if not searchlight and not has_time and link.result:
+                detailed_items = ['feature_importances']
+                result = {k: v for k, v in link.result.items() if detailed_save or not
+                          any([k.startswith(e) for e in detailed_items])}
+                messages = ", ".join(["[" + m + "]" for m in link.info['messages']]) \
+                    if detailed_save else None
+                if detailed_save:
+                    for k, v in link.description_optional.items():
+                        if isinstance(v, np.ndarray):
+                            link.description_optional[k] = v.tolist()
+                    description_optional = json.dumps(link.description_optional) if detailed_save else None
+                    db_dict = OrderedDict([('scoring', result['scoring']),
+                                           ('scoring_ste', result['scoring_ste']),
+                                           ('proc_time', link.info['t_dur']),
+                                           ('result', json.dumps(result)),
+                                           ('t_start', link.info['t_start']),
+                                           ('t_end', link.info['t_end']),
+                                           ('info', description_optional),
+                                           ('timestamp_start', link.info['t_stamp_start']),
+                                           ('timestamp_end', link.info['t_stamp_end']),
+                                           ('success', link.info['success']),
+                                           ('messages', messages)
+                                           ] +
+                                          list(link.description.items()))
+                else:
+                    db_dict = OrderedDict([('scoring', result['scoring']),
+                                           ('scoring_ste', result['scoring_ste']),
+                                           ('proc_time', link.info['t_dur']),
+                                           ('t_end', link.info['t_end']),
+                                           ('correct', json.dumps(result['correct'])),
+                                           ] +
+                                          list(link.description.items()))
+    if not searchlight and not has_time and cv_pre is None and not topickle and output_path is not None:
         ex_type = None
         try:
             attempts = 0
@@ -419,6 +436,7 @@ def _link(params):
                 attempts = 0
                 while not succeeded:
                     try:
+                        ### CULPRIT
                         # print('[%g %s #%g] Starting insert' % (link_id, datetime.now().strftime("%H:%M:%S.%f"), attempts))
                         # tic = timeit.default_timer()
                         connect(db_string)['chain'].insert(db_dict)
@@ -453,46 +471,18 @@ def _link(params):
                 os.remove(lockfile)
                 # print('[%g %s] Lockfile removed' % (link_id, datetime.now().strftime("%H:%M:%S.%f")))
 
-        # total_time = 0
-        # while os.path.exists(lockfile):
-        #     time.sleep(0.1)
-        #     total_time += 0.1
-        #     if total_time > 100:
-        #         raise IOError("Timeout reached for lock file\n" + link_string)
-        # if os.path.exists(os.path.dirname(lockfile)):
-        #     open(lockfile, 'a').close()
-        # else:
-        #     os.mkdir(os.path.dirname(lockfile))
-        # # connect(db_string)['chain'].insert(db_dict)
-        # attempts = 0
-        # succeeded = False
-        # while not succeeded:
-        #     try:
-        #         connect(db_string)['chain'].insert(db_dict)
-        #         succeeded = True
-        #     except Exception as ex:
-        #         if attempts > 5:
-        #             warning_ = "An exception of type {0} occured. Arguments:\n{1!r}\n".\
-        #                 format(type(ex).__name__, ex.args)
-        #             warn(warning_ + link_string_short)
-        #             raise
-        #         attempts += 1
-        #         time.sleep(0.1)
-        #
-        #
-        # if os.path.exists(lockfile):
-        #     os.remove(lockfile)
-
-
     elif has_time:
-        print('Elapsed time: %.1f minutes' % (link.info['t_dur'] / 60.))
+        # print('Elapsed time: %.1f minutes' % (link.info['t_dur'] / 60.))
+        if not detailed_save:
+            # link.result.pop('folds')
+            link.result = link.result['result']
         if output_path is not None:
-            fname = '%s_%s.pkl' % (link.scheme.data[0].name, link.scheme.channels[0].clfs.name)
+            fname = '%s.pkl' % link.scheme.name
             pickle.dump(link.result, open(os.path.join(output_path, fname), 'wb'))
             print('[%s] Saved result in %s' % (time.strftime("%d.%m %H:%M:%S"),
                                                os.path.join(output_path, fname)))
 
-    else:  # searchlight
+    elif searchlight:  # searchlight
         for k, img in link.result.items():
             path, ext = os.path.splitext(output_path)
             path_searchlight = '%s_%s%s' % (path, k, ext)
@@ -504,22 +494,37 @@ def _link(params):
             nibabel.save(img, path_searchlight)
             print('[%s] Saved searchlight result in %s' % (time.strftime("%d.%m %H:%M:%S"),
                                                            path_searchlight))
-            print('Elapsed time: %.1f minutes' % (link.info['t_dur'] / 60.))
+            # print('Elapsed time: %.1f minutes' % (link.info['t_dur'] / 60.))
+
+
+    if cv_pre is not None and output_path is not None:
+        if not os.path.exists(output_path):
+            os.mkdir(output_path)
+        if not cv_pre[0]:
+            link.result['analysis'] = link.analysis
+        path = os.path.join(output_path, '%0*g.pkl' % (len(str(cv_pre[3])), cv_pre[0] + 1))
+        pickle.dump(link.result, open(path, 'wb'))
+        print('Saved link to %s' % path)
+
+    if topickle:
+        pickle.dump(link, open(output_path, 'wb'))
+        print('Saved link to %s' % output_path)
+
+    if verbose > -2:
+        print('Finished link in %s' % elapsed_time(link.info['t_dur']))
 
     return link
 
 
 class ChainBuilder(object):
 
-    scheme_pool = None
-
     def __init__(self, schemes=None):
 
-        """ Helper to build a decereb.chain.Chain from a (list of ) scheme(s) or scheme name(s)
+        """ Helper to build a decereb.chain.Chain from a (list of ) scheme(s)
 
         Parameters
         ----------
-        schemes : str, List<str>, decereb.descriptor.SchemeDescriptor,
+        schemes : decereb.descriptor.SchemeDescriptor,
                   List<decereb.descriptor.SchemeDescriptor>
         """
         self.schemes = schemes
@@ -531,20 +536,9 @@ class ChainBuilder(object):
     @schemes.setter
     def schemes(self, value):
         if not isinstance(value, (list, tuple)):
-            value = [value]
-        if isinstance(value[0], SchemeDescriptor):
-            self.scheme_pool = value
-            self._schemes = [v.name for v in value]
-        elif isinstance(value[0], str):
-            if self.scheme_pool is None:
-                raise ValueError('Selection by name requires prior initialization of the scheme '
-                                 'pool.')
-            else:
-                self._schemes = value
+            self._schemes = [value]
         else:
-            raise ValueError("Parameter 'schemes' must be one of the following: str, List<str>, "
-                             "decereb.descriptor.SchemeDescriptor or "
-                             "List<decereb.descriptor.SchemeDescriptor>")
+            self._schemes = value
 
     def build_chain(self, select_indices=None):
 
@@ -560,8 +554,7 @@ class ChainBuilder(object):
         chain : decereb.chain.Chain
 
         """
-        selected_schemes = list(DescriptorConcatenator(descriptor_list=self.scheme_pool,
-                                                       base_names=self.schemes))
+        selected_schemes = list(DescriptorConcatenator(descriptor_list=self.schemes))
 
         if select_indices is None:
             select_indices = range(len(selected_schemes))
@@ -576,7 +569,3 @@ class ChainBuilder(object):
         chain = Chain(link_list)
 
         return chain
-
-    @staticmethod
-    def init_chain_builder(schemes):
-        ChainBuilder.scheme_pool = schemes

@@ -12,7 +12,7 @@ clf = SVC
 # 2. Parameters defined as a nested list [[Param1, Param2, .. ParamN]] are iterated over in a
 #    nested leave-one-out cross-validation procedure using GridSearchCV, to find the optimal
 #    parameter in each fold.
-#    In the example below, a gridsearch is performed for the parameter C on the values 0.1 and 1,
+#    In the example below, a gridsearch is performed for the parameter alpha on the values 0.1 and 1,
 #    both for the analysis using an RBF kernel and for the analysis using a linear kernel.
 clf_args = dict(kernel=['rbf', 'linear'], C=[[0.1, 1]])
 

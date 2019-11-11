@@ -379,7 +379,7 @@ class SOM(BaseEstimator):
         area = a[0].T*12
         
         # plt.scatter(coord[:,1]+.5, msz[0]-.5-coord[:,0], s=area, alpha=0.9,c='None',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
-#         plt.scatter(coord[:,1]+.5, msz[0]-.5-coord[:,0], s=area, alpha=0.2,c='b',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
+#         plt.scatter(coord[:,1]+.5, msz[0]-.5-coord[:,0], s=area, alpha=0.2,c='beta',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
         coord = self.ind_to_xy(np.arange(self.nnodes))
         plt.scatter(coord[:,1], msz[0]-.5- coord[:,0], s=area.flatten(), alpha=.9,c='None',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
         plt.xlim(0,msz[1])
@@ -398,10 +398,10 @@ class SOM(BaseEstimator):
             area = a[0].T*50
             
             plt.scatter(coord_d[:,1]+.5, msz[0]-.5-coord_d[:,0], s=area, alpha=0.9,c='None',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
-            plt.scatter(coord_d[:,1]+.5, msz[0]-.5-coord_d[:,0], s=area, alpha=0.2,c='b',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
+            plt.scatter(coord_d[:,1]+.5, msz[0]-.5-coord_d[:,0], s=area, alpha=0.2,c='beta',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
             print('hi')
-#             plt.scatter(coord[:,1], msz[0]-1-coord[:,0], s=area, alpha=0.2,c='b',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
-#             plt.scatter(X, msz[0]-1-Y, s=area, alpha=0.2,c='b',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')# 
+#             plt.scatter(coord[:,1], msz[0]-1-coord[:,0], s=area, alpha=0.2,c='beta',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')
+#             plt.scatter(X, msz[0]-1-Y, s=area, alpha=0.2,c='beta',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')#
 #             plt.scatter(X, msz[0]-1-Y, s=area, alpha=0.9,c='None',marker='o',cmap='jet',linewidths=3, edgecolor = 'r')            
             plt.xlim(0,msz[1])
             plt.ylim(0,msz[0])

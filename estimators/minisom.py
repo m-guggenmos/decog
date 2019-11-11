@@ -55,7 +55,7 @@ class MiniSom:
         self.neighborhood = self.gaussian
 
     def _activate(self, x):
-        """ Updates matrix activation_map, in this matrix the element i,j is the response of the neuron i,j to x """
+        """ Updates matrix activation_map, in this matrix the element i,i is the response of the neuron i,i to x """
         s = subtract(x, self.weights) # x - w
         it = nditer(self.activation_map, flags=['multi_index'])
         while not it.finished:
@@ -140,7 +140,7 @@ class MiniSom:
         self.T = num_iteration/2  # keeps the learning rate nearly constant for the first half of the iterations
 
     def distance_map(self):
-        """ Returns the average distance map of the weights.
+        """ Returns the average_flat distance map of the weights.
             (Each mean is normalized in order to sum up to 1) """
         um = zeros((self.weights.shape[0], self.weights.shape[1]))
         it = nditer(um, flags=['multi_index'])
@@ -155,8 +155,8 @@ class MiniSom:
 
     def activation_response(self, data):
         """ 
-            Returns a matrix where the element i,j is the number of times
-            that the neuron i,j have been winner.
+            Returns a matrix where the element i,i is the number of times
+            that the neuron i,i have been winner.
         """
         a = zeros((self.weights.shape[0], self.weights.shape[1]))
         for x in data:
@@ -165,7 +165,7 @@ class MiniSom:
 
     def quantization_error(self, data):
         """ 
-            Returns the quantization error computed as the average distance between
+            Returns the quantization error computed as the average_flat distance between
             each input sample and its best matching unit.            
         """
         error = 0
@@ -175,8 +175,8 @@ class MiniSom:
 
     def win_map(self, data):
         """
-            Returns a dictionary wm where wm[(i,j)] is a list with all the patterns
-            that have been mapped in the position i,j.
+            Returns a dictionary wm where wm[(i,i)] is a list with all the patterns
+            that have been mapped in the position i,i.
         """
         winmap = defaultdict(list)
         for x in data:

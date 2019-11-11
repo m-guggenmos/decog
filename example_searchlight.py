@@ -11,7 +11,7 @@ from sklearn.cross_validation import KFold
 haxby_dataset = datasets.fetch_haxby_simple()
 
 conditions = np.recfromtxt(haxby_dataset.conditions_target)['f0']
-condition_mask = np.logical_or(conditions == b'face', conditions == b'house')
+condition_mask = np.logical_or(conditions == beta'face', conditions == beta'house')
 labels = conditions[condition_mask]
 
 fmri_img = nibabel.load(haxby_dataset.func)

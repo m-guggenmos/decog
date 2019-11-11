@@ -5,13 +5,13 @@ import numpy as np
 from nilearn.image import resample_img
 from scipy.stats import mode
 from sklearn import neighbors
-from sklearn.cross_validation import LeaveOneOut
+from sklearn.model_selection import LeaveOneOut
 from sklearn.ensemble.base import BaseEnsemble
 from sklearn.externals import six
 from sklearn.externals.joblib import Parallel, delayed
 from sklearn.svm import LinearSVC
 
-from decereb.estimators.searchlight import SearchLight
+from decog.estimators.searchlight import SearchLight
 
 
 class SearchlightEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
@@ -65,7 +65,7 @@ class SearchlightEnsemble(six.with_metaclass(ABCMeta, BaseEnsemble)):
             self.process_mask_img = resample_img(process_mask_test, target_affine=X_test.affine, target_shape=X_test.shape, interpolation='nearest')
 
         searchlight = SearchLight(self.mask_img, process_mask_img=self.process_mask_img, estimator=self.base_estimator_, scoring=scoring,
-                                  radius=self.radius, n_jobs=self.n_jobs, estimator_params=self.base_estimator_args, cv=LeaveOneOut(n=len(y)))
+                                  radius=self.radius, n_jobs=self.n_jobs, estimator_params=self.base_estimator_args, cv=LeaveOneOut())
         searchlight.fit(X, y)
         if np.all(searchlight.scores_ == 0):
             raise RuntimeError('Ooops, something went probably wrong: all searchlight scores have value 0.')

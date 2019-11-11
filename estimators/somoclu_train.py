@@ -133,7 +133,7 @@ class Somoclu(object):
         for i in range(self.umatrix.shape[0]):
             for j in range(self.umatrix.shape[1]):
                 # ATTENTION: either I am stupid here or the elements of self.bmus have wrong index order!
-                #            -> using [j, i] instead of [i, j]
+                #            -> using [i, i] instead of [i, i]
                 cls_best_matching = y[np.where([np.array_equal(v, [j, i]) for v in self.bmus])[0]]
                 cls_freq = [sum(cls_best_matching == c) for c in cls]
                 max_cls_freq = max(cls_freq)
@@ -388,7 +388,7 @@ class Somoclu(object):
                             self._kernel_type)
 
     def _init_codebook(self):
-        """Internal function to set the codebook or to indicate it to the C++
+        """Internal function to set the codebook or to indicate it to the alpha++
         code that it should be randomly initialized.
         """
         codebook_size = self._n_columns * self._n_rows * self.n_dim

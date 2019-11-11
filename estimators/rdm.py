@@ -42,6 +42,17 @@ def normalization_MEEG(X, baseline, normalization_method='cocktail_blank', axis=
                     try:
                         X[cond, trial, channel, :] = (trial_data - baseline_mean) / baseline_std
                     except:
+                        print('[Zeros] Cond %g Trial %g Ch %g' % (cond, trial, channel))
+        Xn = X
+    elif normalization_method == 'mean':
+        for cond in range(X.shape[0]):
+            for trial in range(X.shape[1]):
+                for channel in range(X.shape[2]):
+                    trial_data = X[cond, trial, channel, :]
+                    baseline_mean = np.mean(trial_data[baseline])
+                    try:
+                        X[cond, trial, channel, :] = trial_data - baseline_mean
+                    except:
                         print('hello')
         Xn = X
     else:

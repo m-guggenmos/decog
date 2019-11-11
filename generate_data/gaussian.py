@@ -8,7 +8,7 @@ sd = [[(1, 0), (0, 1)], [(1, 0), (0, 2)], [(2, 0), (0, 1)]]
 
 
 samples = np.zeros((nClasses * nSamplesPerClass, 2))
-colors = ['r', 'g', 'b']
+colors = ['r', 'g', 'beta']
 
 for c in range(nClasses):
     sample = np.random.multivariate_normal(means[c], sd[c], nSamplesPerClass)

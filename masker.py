@@ -2,17 +2,20 @@ from nilearn.input_data.base_masker import BaseMasker
 from nilearn.input_data import NiftiMasker
 from nilearn import _utils
 from nilearn.image import smooth_img, resample_img
+import nibabel as nib
 import numpy as np
 from nibabel import Nifti1Image, load
 import os
 import warnings
+from warnings import warn
+# import time
 
 FDICT = dict(mean=(np.mean, dict(axis=1)), max=(np.max, dict(axis=1)))
 
 
 class MultiRoiMasker(BaseMasker):
     def __init__(self, mask_img=None, rois=None, smoothing_fwhm=None, resampling=None,
-                 normalize=False, combine_rois=False, searchlight=False):
+                 normalize=False, combine_rois=False, searchlight=False, verbose=0):
 
         self.mask_img = mask_img
         if not rois:
@@ -22,11 +25,13 @@ class MultiRoiMasker(BaseMasker):
         if normalize and searchlight:
             raise ValueError("Combination searchlight=True and normalize=True currently not supported!")
         self.rois = rois
+        self.n_rois = len(rois)
         self.smoothing_fwhm = smoothing_fwhm
         self.resampling = resampling
         self.normalize = normalize
         self.combine_rois = combine_rois
         self.searchlight = searchlight
+        self.verbose = verbose
 
     def fit(self):
 
@@ -34,6 +39,10 @@ class MultiRoiMasker(BaseMasker):
             resample = np.diag(self.resampling * np.ones(3))
         else:
             resample =  None
+
+        if self.mask_img is None:
+            self.mask_img = nib.load(self.rois[0])
+            self.mask_img.get_data()[:] = 1
 
         self.mask_img = resample_img(self.mask_img, target_affine=resample, interpolation='nearest')
 
@@ -84,15 +93,29 @@ class MultiRoiMasker(BaseMasker):
                 if not isinstance(self.masker, tuple):
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore", UserWarning)
-                        data = {k: masker.transform(X) for k, masker in self.masker.items()}
-                        if self.normalize:
-                            data = {k: np.array([d-np.mean(d) for d in v]) for k, v in data.items()}
+                        data = dict()
+                        for k, masker in self.masker.items():
+                            if self.verbose >= 2:
+                                print('[MultiRoiMasker] Transforming ROI %g / %g' % (k + 1, self.n_rois))
+                            try:
+                                # print('Start [M1]')
+                                # t0 = time.time()
+                                data[k] = masker.transform(X)
+                                # print('[M1] Elapsed time: %.2f secs' % (time.time() - t0))
+                                if self.normalize:
+                                    data[k] = np.array([d-np.mean(d) for d in data[k]])
+                            except Exception as ex:
+                                data[k] = np.nan
+                                warning_ = "An exception of type {0} occured. Arguments:\n{1!r}\n". \
+                                    format(type(ex).__name__, ex.args)
+                                warn(warning_)
                 else:
                     data = dict()
                     c = 0
                     for m, modality in enumerate(self.masker):
                         X_m = [x[m] for x in X]
                         for k, masker in modality.items():
+                            print(k)
                             data_ = masker.transform(X_m)
                             if self.normalize:
                                 data_ = np.array([d - np.mean(d) for d in data_])
@@ -101,6 +124,22 @@ class MultiRoiMasker(BaseMasker):
             else:
                 data = {k: (masker.transform(X), self.rois[k]) for k, masker in self.masker.items()}
         return data
+
+    def fit_transform(self, X, y=None):
+        """Fit to data, then transform it
+
+        Parameters
+        ----------
+        X : Niimg-like object
+            See http://nilearn.github.io/manipulating_images/input_output.html.
+
+        y : numpy array of shape [n_samples]
+            Target values.
+
+        """
+
+        return self.fit().transform(X)
+
 
     def preprocess(self, imgs):
 
@@ -189,6 +228,7 @@ class DummyMasker(BaseMasker):
     def __init__(self):
 
         self.mask_img = None
+        self.masker_args = dict()
 
     def fit(self, X, y):
 

@@ -45,10 +45,10 @@ def _get_best_parameters(fold_results, param_names):
     if pandas.isnull(fold_results.loc[:, 'score']).all():
         raise ValueError("Results are all NaN")
 
-    # average across inner folds
+    # average_flat across inner folds
     grouped = fold_results.drop('fold', axis=1).groupby(param_names)
     mean_performance = grouped.mean()
-    # highest average across performance measures
+    # highest average_flat across performance measures
     max_idx = mean_performance.loc[:, 'score'].idxmax()
 
     # best parameters
@@ -76,7 +76,7 @@ class MPIBatchWorker(object):
         # first item denotes ID of fold, and second item encodes
         # a message that tells slaves what to do
         self._task_desc = numpy.empty(2, dtype=int)
-        # stores data that the root node broadcasts
+        # stores data that the home_ node broadcasts
         self._data_X = None
         self._data_y = None
 
@@ -104,7 +104,7 @@ class MPIBatchWorker(object):
 
 
 class MPISlave(MPIBatchWorker):
-    """Receives task from root node and sends results back"""
+    """Receives task from home_ node and sends results back"""
 
     def __init__(self, estimator, scorer, fit_params):
         super(MPISlave, self).__init__(estimator, scorer, fit_params)
@@ -162,7 +162,7 @@ class MPISlave(MPIBatchWorker):
 
 
 class MPIGridSearchCVMaster(MPIBatchWorker):
-    """Running on the root node and distributes work across slaves"""
+    """Running on the home_ node and distributes work across slaves"""
 
     def __init__(self, param_grid, cv_iter, estimator, scorer, fit_params):
         super(MPIGridSearchCVMaster, self).__init__(estimator,
@@ -190,7 +190,7 @@ class MPIGridSearchCVMaster(MPIBatchWorker):
 
         # Distribute batches across all nodes
         root_work_batch = comm.scatter(work_batches, root=0)
-        # The root node also does receive one batch it has to process
+        # The home_ node also does receive one batch it has to process
         root_result_batch = self.process_batch(root_work_batch)
         return root_result_batch
 
@@ -261,7 +261,7 @@ class NestedGridSearchCV(BaseEstimator):
 
     The data is first split into ``cv`` train and test sets. For each training set.
     a grid search over the specified set of parameters is performed (inner cross-validation).
-    The set of parameters that achieved the highest average score across all inner folds
+    The set of parameters that achieved the highest average_flat score across all inner folds
     is used to re-fit a model on the entire training set of the outer cross-validation loop.
     Finally, results on the test set of the outer loop are reported.
 
@@ -304,7 +304,7 @@ class NestedGridSearchCV(BaseEstimator):
     ----------
     best_params_ : pandas.DataFrame
         Contains selected parameter settings for each fold.
-        The validation score refers to average score across all folds of the
+        The validation score refers to average_flat score across all folds of the
         inner cross-validation, the test score to the score on the test set
         of the outer cross-validation loop.
 
