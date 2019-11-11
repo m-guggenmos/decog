@@ -172,19 +172,22 @@ LABEL_NAMES = ['controls', 'patients']
 cv = LeaveOneOut()
 cv_weight = SuperExhaustiveLeaveNOut(N=2)
 
-CLF = ClassifierDescriptor(name='SVC_rbf', clf=SVC, clf_args=dict(kernel='rbf', class_weight='balanced', C=8))
+CLF = ClassifierDescriptor(name='SVC_rbf', clf=SVC,
+                           clf_args=dict(kernel='rbf', class_weight='balanced', C=8))
 
 clfs = {k: CLF for k in data.keys()}
-preproc = PreprocessingDescriptor('preproc', preprocessor=RobustScaler, preprocessor_args=dict(quantile_range=(1.0, 99.0)))
-channels = dict([(k, Channel(data=Data(data[k]), preproc=preproc, clfs=clfs[k])) for k in data.keys()])
+preproc = PreprocessingDescriptor('preproc', preprocessor=RobustScaler,
+                                  preprocessor_args=dict(quantile_range=(1.0, 99.0)))
+channels = dict([(k, Channel(data=Data(data[k]), preproc=preproc, clfs=clfs[k]))
+                 for k in data.keys()])
 
-scheme = SchemeDescriptor(channels, LABELS, scoring='balanced_accuracy', label_names=LABEL_NAMES, cv=cv,
-                          meta_clf=MultiModalProbabilisticMetaClassifier,
-                          meta_clf_args=dict(weight_grid=WEIGHTGRID, weight_cv=cv_weight, weight_separate=False, discrete=False))
+scheme = SchemeDescriptor(channels, LABELS, scoring='balanced_accuracy', label_names=LABEL_NAMES,
+                          cv=cv, meta_clf=MultiModalProbabilisticMetaClassifier,
+                          meta_clf_args=dict(weight_grid=WEIGHTGRID, weight_cv=cv_weight,
+                                             weight_separate=False, discrete=False))
 
 if __name__ == '__main__':
-
     chain = ChainBuilder(schemes=scheme).build_chain()
-    analysis = chain.run(n_jobs_links=1, n_jobs_folds=1, n_jobs_grid=1, verbose=1, output_path=PATH,
-                         skip_ioerror=False, skip_runerror=False, detailed_save=True, recompute=True)
+    analysis = chain.run(output_path=PATH, skip_ioerror=False, skip_runerror=False,
+                         detailed_save=True, recompute=True)
 ```
