@@ -1,16 +1,16 @@
-# decereb
+# decog
 High-level interface for sklearn / nilearn, targeted at neuroimaging data analysis. Not even alpha at the moment -- the API may change anytime.
 
 **Simple example:**
 
 ```python
 from sklearn.svm import SVC
-from decereb.chain import SimpleChain
+from decog.chain import SimpleChain
 from sklearn.datasets import make_classification
 
 X, y = make_classification()
 clf = SVC
-# Decereb offers two features for classifier and feature selection parameters:
+# Decog offers two features for classifier and feature selection parameters:
 # 1. Parameters in plain list form [Param1, Param2, .. ParamN] generate N analyses looping over
 #    each parameter.
 #    In the example below, two analyses are produced, one using an RBF kernel and a second one
@@ -23,7 +23,7 @@ clf = SVC
 clf_args = dict(kernel=['rbf', 'linear'], C=[[0.1, 1]])
 
 # Here we use a variance-based feature selection and start two analyses with two different
-# thresholds. Please note that Decereb expands all permutations of classifier parameters and feature
+# thresholds. Please note that Decog expands all permutations of classifier parameters and feature
 # selection parameters, i.e. in this case the code produces 2x2=4 analyses.
 fs = 'variance'
 fs_args = dict(threshold=[0.01, 0.1])
@@ -39,11 +39,11 @@ analysis = SimpleChain(data=X, clf=clf, clf_args=clf_args, fs=fs, fs_args=fs_arg
 # skip_runerror: set True if the analysis chain should continue despite any runtime error in the
 #                previous analysis
 # detailed_save: save more detailed results (currently undocumented)
-result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decereb/',
+result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decog/',
                       skip_ioerror=False, skip_runerror=False, detailed_save=True)
 print('Finished example!')
 
-# Decereb results are stored in a simple SQL-based database (https://dataset.readthedocs.org/),
+# Decog results are stored in a simple SQL-based database (https://dataset.readthedocs.org/),
 # which allows easy querying of the results (e.g. SELECT * FROM chain ORDER BY roc_auc_scores)
 #
 # An exception is if the classifier is searchlight-based, in which case the results are saved as
@@ -57,7 +57,7 @@ print('Finished example!')
 from sklearn.svm import SVC
 from sklearn.ensemble.forest import RandomForestClassifier
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from decereb.chain import Channel, ClassifierDescriptor, FeatureSelectionDescriptor, \
+from decog.chain import Channel, ClassifierDescriptor, FeatureSelectionDescriptor, \
     SchemeDescriptor, Data, ChainBuilder
 from sklearn.datasets import make_classification
 
@@ -104,7 +104,7 @@ analysis = ChainBuilder(schemes=processing_schemes).build_chain()
 # 2 different data sets x 2 different feature selections x 4 different classifiers (SVC,
 # RandomForest with gini, RandomForest with entropy, LDA).
 # Increase the n_jobs_links variable below, to distribute these links on different processors.
-result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decereb/',
+result = analysis.run(n_jobs_links=1, n_jobs_folds=1, verbose=1, output_path='/tmp/decog/',
                       skip_ioerror=False, skip_runerror=False, detailed_save=True)
 print('Finished example!')
 ```
@@ -115,8 +115,8 @@ print('Finished example!')
 import os
 import numpy as np
 import nibabel
-from decereb.chain import SimpleChain, Data
-from decereb.estimators.searchlight import SearchLight
+from decog.chain import SimpleChain, Data
+from decog.estimators.searchlight import SearchLight
 from nilearn import datasets
 from nilearn.image import index_img
 from nilearn._utils import check_niimg_4d
