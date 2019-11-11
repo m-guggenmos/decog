@@ -162,14 +162,6 @@ PATH_DATA = '/PATH/TO/DATA/'
 
 WEIGHTGRID = [1, 2]
 
-MODALITIES = [
-    'FS_CT',
-    'VBM_GMD',
-    'VBM_CSFV',
-    'RS_NA',
-    'TS_OUT',
-]
-
 PATH = '/PATH/TO/SAVE/RESULTS/'
 
 data = 'DATA DICTIONARY (ONE MODALITY PER KEY)'
@@ -182,10 +174,9 @@ cv_weight = SuperExhaustiveLeaveNOut(N=2)
 
 CLF = ClassifierDescriptor(name='SVC_rbf', clf=SVC, clf_args=dict(kernel='rbf', class_weight='balanced', C=8))
 
-clfs = dict(VBM_GMD=CLF, VBM_CSFV=CLF, FS_CT=CLF, TS_OUT=CLF, RS_NA=CLF)
+clfs = {k: CLF for k in data.keys()}
 preproc = PreprocessingDescriptor('preproc', preprocessor=RobustScaler, preprocessor_args=dict(quantile_range=(1.0, 99.0)))
-
-channels = dict([(k, Channel(data=Data(data[k]), preproc=preproc, clfs=clfs[k])) for k in MODALITIES])
+channels = dict([(k, Channel(data=Data(data[k]), preproc=preproc, clfs=clfs[k])) for k in data.keys()])
 
 scheme = SchemeDescriptor(channels, LABELS, scoring='balanced_accuracy', label_names=LABEL_NAMES, cv=cv,
                           meta_clf=MultiModalProbabilisticMetaClassifier,
